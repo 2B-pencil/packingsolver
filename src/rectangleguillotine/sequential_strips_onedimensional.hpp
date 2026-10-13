@@ -38,7 +38,7 @@ struct SequentialStripsOnedimensionalParameters: packingsolver::Parameters<Insta
 
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 };
 
 const SequentialStripsOnedimensionalOutput sequential_strips_onedimensional(

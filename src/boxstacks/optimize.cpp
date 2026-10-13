@@ -15,6 +15,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::boxstacks;
+using packingsolver::boxstacks::Output;
 
 namespace
 {
@@ -433,7 +434,7 @@ packingsolver::boxstacks::Output packingsolver::boxstacks::optimize(
         const Instance& instance,
         const OptimizeParameters& parameters)
 {
-    Output output(instance);
+    packingsolver::boxstacks::Output output(instance);
     AlgorithmFormatter algorithm_formatter(instance, parameters, output);
     algorithm_formatter.start();
     algorithm_formatter.print_header();
@@ -478,7 +479,7 @@ packingsolver::boxstacks::Output packingsolver::boxstacks::optimize(
         // original 'algorithm_formatter' as soon as it is found, rather
         // than only once at the very end.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::boxstacks::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: some sub-solves never
         // call 'new_solution_callback' at all - this guarantees the answer
         // is still reported once regardless. Harmless to call again since

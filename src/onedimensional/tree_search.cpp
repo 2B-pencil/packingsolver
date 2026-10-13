@@ -11,6 +11,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::onedimensional;
+using packingsolver::onedimensional::Output;
 
 ////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////// BranchingScheme ////////////////////////////////
@@ -660,7 +661,7 @@ const packingsolver::onedimensional::TreeSearchOutput packingsolver::onedimensio
                 scheme_algorithm_formatter->update_solution(solution, ss.str());
 
                 if (tssibs_output.optimal) {
-                    Output bounds(instance);
+                    packingsolver::onedimensional::Output bounds(instance);
                     // 'Solution::operator<' always ranks a feasible solution
                     // above an infeasible one, regardless of objective, so
                     // 'solution_pool.best()' can only be infeasible here if

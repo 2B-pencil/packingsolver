@@ -127,7 +127,7 @@ struct ReductionParameters: optimizationtools::Parameters
      * Set by 'optimize' from 'OptimizeParameters::linear_programming_solver_name'.
      */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 };
 
 /**

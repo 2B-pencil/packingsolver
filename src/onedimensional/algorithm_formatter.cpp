@@ -5,6 +5,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::onedimensional;
+using packingsolver::onedimensional::Output;
 
 void AlgorithmFormatter::start()
 {
@@ -256,7 +257,7 @@ void AlgorithmFormatter::update_variable_sized_bin_packing_bound(
 }
 
 void AlgorithmFormatter::update_bounds(
-        const Output& output)
+        const packingsolver::onedimensional::Output& output)
 {
     if (output.is_proven_infeasible)
         update_is_proven_infeasible();

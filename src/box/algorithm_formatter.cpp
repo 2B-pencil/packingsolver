@@ -5,6 +5,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::box;
+using packingsolver::box::Output;
 
 void AlgorithmFormatter::start()
 {
@@ -358,7 +359,7 @@ void AlgorithmFormatter::update_open_dimension_z_bound(
 }
 
 void AlgorithmFormatter::update_bounds(
-        const Output& output)
+        const packingsolver::box::Output& output)
 {
     if (output.is_proven_infeasible)
         update_is_proven_infeasible();

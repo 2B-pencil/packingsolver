@@ -164,7 +164,7 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
 
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /**
      * Force running the dual feasible functions bound/infeasibility check

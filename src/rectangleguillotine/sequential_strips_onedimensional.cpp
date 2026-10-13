@@ -13,6 +13,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+using packingsolver::rectangleguillotine::Output;
 
 namespace
 {
@@ -370,8 +371,8 @@ const SequentialStripsOnedimensionalOutput packingsolver::rectangleguillotine::s
         packingsolver::Parameters<Instance, Solution, Output> local_parameters;
         local_parameters.verbosity_level = 0;
         local_parameters.timer = parameters.timer;
-        Output local_output_vertical(instance);
-        Output local_output_horizontal(instance);
+        packingsolver::rectangleguillotine::Output local_output_vertical(instance);
+        packingsolver::rectangleguillotine::Output local_output_horizontal(instance);
         AlgorithmFormatter local_algorithm_formatter_vertical(
                 instance,
                 local_parameters,

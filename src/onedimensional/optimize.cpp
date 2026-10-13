@@ -17,6 +17,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::onedimensional;
+using packingsolver::onedimensional::Output;
 
 namespace
 {
@@ -606,7 +607,7 @@ packingsolver::onedimensional::Output packingsolver::onedimensional::optimize(
         const Instance& instance,
         const OptimizeParameters& parameters)
 {
-    Output output(instance);
+    packingsolver::onedimensional::Output output(instance);
     AlgorithmFormatter algorithm_formatter(instance, parameters, output);
     algorithm_formatter.start();
     algorithm_formatter.print_header();
@@ -681,7 +682,7 @@ packingsolver::onedimensional::Output packingsolver::onedimensional::optimize(
         // reduced instance report live progress (in original-instance
         // coordinates) the same way a direct, unreduced run would.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::onedimensional::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: some sub-solves never
         // call 'new_solution_callback' at all (e.g. nothing left to search
         // for). Harmless to call again even when the callback already

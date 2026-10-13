@@ -21,6 +21,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+using packingsolver::rectangleguillotine::Output;
 
 namespace
 {
@@ -674,7 +675,7 @@ packingsolver::rectangleguillotine::Output packingsolver::rectangleguillotine::o
         const Instance& instance,
         const OptimizeParameters& parameters)
 {
-    Output output(instance);
+    packingsolver::rectangleguillotine::Output output(instance);
     AlgorithmFormatter algorithm_formatter(instance, parameters, output);
     algorithm_formatter.start();
     algorithm_formatter.print_header();
@@ -747,7 +748,7 @@ packingsolver::rectangleguillotine::Output packingsolver::rectangleguillotine::o
         // reduced instance report live progress (in original-instance
         // coordinates) the same way a direct, unreduced run would.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::rectangleguillotine::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: some sub-solves never
         // call 'new_solution_callback' at all (e.g. a reduced instance
         // left with zero items), so this guarantees the answer is still

@@ -10,6 +10,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::box;
+using packingsolver::box::Output;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////// Internals ///////////////////////////////////
@@ -932,7 +933,7 @@ const packingsolver::box::TreeSearchMaximalSpacesOutput packingsolver::box::tree
                     // no feasible solution was found anywhere in this
                     // now-exhaustive search: a genuine infeasibility proof,
                     // independent of objective.
-                    Output bounds(instance);
+                    packingsolver::box::Output bounds(instance);
                     if (!solution.feasible()) {
                         // For every non-Knapsack objective (Feasibility
                         // included), 'copies_min' defaults to 'copies', so

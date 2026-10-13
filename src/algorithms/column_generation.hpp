@@ -1396,7 +1396,7 @@ struct ColumnGenerationParameters: packingsolver::Parameters<Instance, Solution,
     columngenerationsolver::Activation rounding_heuristic = columngenerationsolver::Activation::Initial;
 
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /**
      * Sequential feasibility scheme for the 'BinPacking' objective - the

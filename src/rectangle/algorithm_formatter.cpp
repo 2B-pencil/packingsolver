@@ -5,6 +5,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangle;
+using packingsolver::rectangle::Output;
 
 void AlgorithmFormatter::start()
 {
@@ -324,7 +325,7 @@ void AlgorithmFormatter::update_open_dimension_y_bound(
 }
 
 void AlgorithmFormatter::update_bounds(
-        const Output& output)
+        const packingsolver::rectangle::Output& output)
 {
     if (output.is_proven_infeasible)
         update_is_proven_infeasible();

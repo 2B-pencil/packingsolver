@@ -11,6 +11,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangle;
+using packingsolver::rectangle::Output;
 
 namespace
 {
@@ -184,7 +185,7 @@ bool Reduction::try_reduce_group(
         Instance check_instance = check_instance_builder.build();
 
         OptimizeParameters check_parameters = build_check_parameters(parameters, nullptr);
-        Output check_output = optimize(check_instance, check_parameters);
+        packingsolver::rectangle::Output check_output = optimize(check_instance, check_parameters);
         const Solution& check_solution = check_output.solution_pool.best();
         if (!check_solution.full())
             return false;
@@ -728,7 +729,7 @@ bool Reduction::try_reduce_both_group(
 
     Instance check_instance = check_instance_builder.build();
     OptimizeParameters check_parameters = build_check_parameters(parameters, nullptr);
-    Output check_output = optimize(check_instance, check_parameters);
+    packingsolver::rectangle::Output check_output = optimize(check_instance, check_parameters);
     const Solution& check_solution = check_output.solution_pool.best();
     if (!check_solution.full())
         return false;

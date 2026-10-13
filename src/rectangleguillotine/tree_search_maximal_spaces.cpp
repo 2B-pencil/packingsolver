@@ -10,6 +10,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+using packingsolver::rectangleguillotine::Output;
 
 ////////////////////////////////////////////////////////////////////////////////
 //////////////////////// BranchingSchemeMaximalSpaces //////////////////////////
@@ -907,7 +908,7 @@ const packingsolver::rectangleguillotine::TreeSearchMaximalSpacesOutput packings
     packingsolver::Parameters<Instance, Solution, Output> local_parameters;
     local_parameters.verbosity_level = 0;
     local_parameters.timer = parameters.timer;
-    Output local_output(instance);
+    packingsolver::rectangleguillotine::Output local_output(instance);
     AlgorithmFormatter local_algorithm_formatter(instance, local_parameters, local_output);
     if (deterministic)
         ibs_parameters.timer.add_end_boolean(&local_algorithm_formatter.end_boolean());
@@ -928,7 +929,7 @@ const packingsolver::rectangleguillotine::TreeSearchMaximalSpacesOutput packings
             tree_search_algorithm_formatter->update_solution(solution, ss.str());
 
             if (tssibs_output.optimal) {
-                Output bounds_output(solution.instance());
+                packingsolver::rectangleguillotine::Output bounds_output(solution.instance());
                 // 'Solution::operator<' always ranks a feasible solution
                 // above an infeasible one, regardless of objective, so
                 // 'solution_pool.best()' can only be infeasible here if no

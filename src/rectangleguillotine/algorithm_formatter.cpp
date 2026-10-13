@@ -5,6 +5,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+using packingsolver::rectangleguillotine::Output;
 
 void AlgorithmFormatter::start()
 {
@@ -348,7 +349,7 @@ void AlgorithmFormatter::update_open_dimension_y_bound(
 }
 
 void AlgorithmFormatter::update_bounds(
-        const Output& output)
+        const packingsolver::rectangleguillotine::Output& output)
 {
     if (output.is_proven_infeasible)
         update_is_proven_infeasible();

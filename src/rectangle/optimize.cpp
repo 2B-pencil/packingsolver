@@ -19,6 +19,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangle;
+using packingsolver::rectangle::Output;
 
 namespace
 {
@@ -733,7 +734,7 @@ packingsolver::rectangle::Output packingsolver::rectangle::optimize(
         // instance coordinates) the same way a direct, unreduced run
         // would.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::rectangle::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: some sub-solves (e.g. a
         // reduced instance left with zero items, fully captured into
         // dedicated bins) never call 'new_solution_callback' at all, since

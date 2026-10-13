@@ -15,6 +15,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::box;
+using packingsolver::box::Output;
 
 namespace
 {
@@ -447,7 +448,7 @@ packingsolver::box::Output packingsolver::box::optimize(
         // original 'algorithm_formatter' as soon as it is found, rather
         // than only once at the very end.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::box::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: harmless to call again
         // since 'update_solution'/'update_bounds' are themselves no-ops
         // for anything that doesn't improve on what is already recorded.

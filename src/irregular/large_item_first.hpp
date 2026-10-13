@@ -32,7 +32,7 @@ struct LargeItemFirstParameters: packingsolver::Parameters<Instance, Solution, O
 {
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /** Optimization mode. */
     OptimizationMode optimization_mode = OptimizationMode::Anytime;

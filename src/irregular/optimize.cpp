@@ -16,6 +16,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::irregular;
+using packingsolver::irregular::Output;
 
 namespace
 {
@@ -725,7 +726,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         const Instance& instance,
         const OptimizeParameters& parameters)
 {
-    Output output(instance);
+    packingsolver::irregular::Output output(instance);
     AlgorithmFormatter algorithm_formatter(instance, parameters, output);
     algorithm_formatter.start();
     algorithm_formatter.print_header();
@@ -770,7 +771,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         // instance coordinates) the same way a direct, unreduced run
         // would.
         reduced_parameters.new_solution_callback = report_reduced_output;
-        Output reduced_output = optimize(reduction.instance(), reduced_parameters);
+        packingsolver::irregular::Output reduced_output = optimize(reduction.instance(), reduced_parameters);
         // Also report the final result explicitly: some sub-solves never
         // call 'new_solution_callback' at all (e.g. nothing improved on
         // the initial empty solution) - this guarantees the answer is

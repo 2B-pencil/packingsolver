@@ -14,6 +14,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+using packingsolver::rectangleguillotine::Output;
 
 BranchingScheme::BranchingScheme(
         const Instance& instance,
@@ -2693,7 +2694,7 @@ const packingsolver::rectangleguillotine::TreeSearchOutput packingsolver::rectan
                         && params.maximum_distance_2_cuts == -1
                         && params.maximum_number_2_cuts == -1;
                     if (exhaustive) {
-                        Output bounds_output(solution.instance());
+                        packingsolver::rectangleguillotine::Output bounds_output(solution.instance());
                         // 'Solution::operator<' always ranks a feasible
                         // solution above an infeasible one, regardless of
                         // objective (see its own 'if (!solution.feasible_)

@@ -143,7 +143,7 @@ struct BendersDecompositionParameters: packingsolver::Parameters<Instance, Solut
 
     /** Linear programming solver of the master problem and subproblems. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /** Optimization mode. */
     OptimizationMode optimization_mode = OptimizationMode::Anytime;

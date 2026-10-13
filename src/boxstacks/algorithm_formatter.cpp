@@ -5,6 +5,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::boxstacks;
+using packingsolver::boxstacks::Output;
 
 void AlgorithmFormatter::start()
 {
@@ -292,7 +293,7 @@ void AlgorithmFormatter::update_variable_sized_bin_packing_bound(
 }
 
 void AlgorithmFormatter::update_bounds(
-        const Output& output)
+        const packingsolver::boxstacks::Output& output)
 {
     if (output.is_proven_infeasible)
         update_is_proven_infeasible();

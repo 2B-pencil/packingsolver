@@ -162,7 +162,7 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
 
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /**
      * Compute a bound on the 'box' relaxation (trivial, 1D and dual

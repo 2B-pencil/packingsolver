@@ -77,7 +77,7 @@ struct ColumnGenerationStripsParameters: packingsolver::Parameters<Instance, Sol
 
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 };
 
 const ColumnGenerationStripsOutput column_generation_strips(
