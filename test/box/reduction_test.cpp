@@ -272,9 +272,10 @@ INSTANTIATE_TEST_SUITE_P(
                 ReductionParameters(),
             }, {
                 // 'box'-specific (no rectangle analogue): item types 0 and
-                // 1 have identical dimensions (4x4x4) but *different*
+                // 1 have identical dimensions (4x5x4) but *different*
                 // allowed-rotation sets (item 0 oriented; item 1 also
-                // allows the YXZ rotation) - two item types are only truly
+                // allows the YXZ rotation, which is not redundant since
+                // 'x != y') - two item types are only truly
                 // interchangeable if a downstream solve could freely swap
                 // one copy for the other in any placement, which is not
                 // the case here, so they must not merge.
@@ -304,5 +305,65 @@ INSTANTIATE_TEST_SUITE_P(
                 false,
                 false,
                 2,
+            }, {
+                // Item type 4x4x6 allowing the 6 rotations, which give only
+                // 3 different rotated boxes: 'YXZ' is the same box as
+                // 'XYZ', 'XZY' as 'YZX', and 'ZXY' as 'ZYX'. Only the
+                // first rotation of each rotated box is kept.
+                fs::path("data") / "box" / "tests" / "remove_redundant_rotations_identical_rotated_boxes",
+                ReductionParameters(),
+            }, {
+                // Bin 10x5x10. Item type 3x8x2 allowing rotations 'XYZ'
+                // and 'YXZ': rotated with 'XYZ', it doesn't fit in the
+                // bin ('y' 8 > 5), so only 'YXZ' is kept. The solution of
+                // the reduced instance, which only uses 'YXZ', is a
+                // solution of the original instance.
+                fs::path("data") / "box" / "tests" / "remove_redundant_rotations_rotation_fits_no_bin",
+                ReductionParameters(),
+            }, {
+                // Item types 0 and 1 are both 4x4x4; item type 0 is
+                // oriented and item type 1 also allows 'YXZ', which gives
+                // the same box. Once this redundant rotation is removed,
+                // both allow the same rotations and merge.
+                fs::path("data") / "box" / "tests" / "bin_packing_merge_identical_items_after_removing_redundant_rotations",
+                ReductionParameters(),
+            }, {
+                // Bin 10x10x10. Item types 7x10x10 and 4x10x10, oriented,
+                // one copy each: they can't share a bin, so the bin is
+                // shrunk along 'x' to 7, and the 4x10x10 item type is
+                // lifted to 7x10x10 (nothing else fits beside it). Both
+                // item types are then identical and merge.
+                fs::path("data") / "box" / "tests" / "bin_packing_lift_item_dimensions",
+                ReductionParameters(),
+            }, {
+                // Bin 10x10x10. Item type 7x10x10 with one copy, item type
+                // 4x10x10 with two copies, oriented. Along 'x', the bin is
+                // shrunk to 8 (the two 4x10x10 copies), and the 7x10x10
+                // item type is lifted to 8x10x10 (no other item fits beside
+                // it). The 4x10x10 item type has two copies, so it is not
+                // lifted.
+                fs::path("data") / "box" / "tests" / "bin_packing_lift_item_dimensions_requires_single_copy",
+                ReductionParameters(),
+            }, {
+                // Bin 10x10x10. Item type 7x8x4 allowing 'XYZ' and 'YXZ',
+                // item type 4x4x7 oriented. The first item type is only
+                // lifted along 'z', the only axis both its rotations put
+                // the same dimension along, to 7. The second item type is
+                // lifted along 'x' and 'y' to 8 (the shrunk bin).
+                fs::path("data") / "box" / "tests" / "bin_packing_lift_item_dimensions_rotations",
+                ReductionParameters(),
+            }, {
+                // 'OpenDimensionX', bin 12x10x10. Item types 7x10x10,
+                // 3x10x10 and 5x10x10, oriented, one copy each. Along 'x',
+                // the 3x10x10 item type would be lifted to 5 (the bin is
+                // shrunk to 12 = 7 + 5, and only 7 fits beside it), but the
+                // objective measures the extent of the items along 'x', so
+                // nothing is lifted. 'skip_optimize_check': only the
+                // reduced instance is checked.
+                fs::path("data") / "box" / "tests" / "open_dimension_x_lift_item_dimensions_skips_x",
+                ReductionParameters(),
+                false,
+                false,
+                true,
             },
         }));

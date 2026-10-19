@@ -213,7 +213,8 @@ INSTANTIATE_TEST_SUITE_P(
             }, {
                 // Item types 0 and 1 have identical dimensions but
                 // different allowed-rotation sets (item 0: XYZ only; item
-                // 1: XYZ and YXZ) - must not merge, since a downstream
+                // 1: XYZ and YXZ, which is not redundant since 'x != y')
+                // - must not merge, since a downstream
                 // solve for the reduced instance's own single merged type
                 // would only ever see one of the two rotation policies.
                 fs::path("data") / "boxstacks" / "tests" / "bin_packing_merge_identical_items_requires_matching_rotations",
@@ -247,5 +248,50 @@ INSTANTIATE_TEST_SUITE_P(
                 ReductionParameters(),
                 false,
                 2,
+            }, {
+                // Item types 0 and 1 are both 100x100x100; item type 0 is
+                // oriented and item type 1 also allows 'YXZ', which gives
+                // the same footprint. Once this redundant rotation is
+                // removed, both allow the same rotations and merge.
+                fs::path("data") / "boxstacks" / "tests" / "bin_packing_merge_identical_items_after_removing_redundant_rotations",
+                ReductionParameters(),
+            }, {
+                // Bin 1000x500x1000. Item type 200x600x100 allowing 'XYZ'
+                // and 'YXZ': rotated with 'XYZ', its footprint doesn't fit
+                // in the bin ('y' 600 > 500), so only 'YXZ' is kept. The
+                // solution of the reduced instance, which only uses
+                // 'YXZ', is a solution of the original instance.
+                fs::path("data") / "boxstacks" / "tests" / "remove_redundant_rotations_rotation_fits_no_bin",
+                ReductionParameters(),
+            }, {
+                // Bin 10x10x10. Item types 7x10x5 and 4x10x5, oriented, one
+                // copy each, with different stackability ids: each one is
+                // always alone in its stack. They can't share a bin, so the
+                // bin is shrunk along 'x' to 7, and the 4x10x5 item type is
+                // lifted to 7 along 'x'. Along 'z', both are lifted to the
+                // height of the bin.
+                fs::path("data") / "boxstacks" / "tests" / "bin_packing_lift_item_dimensions",
+                ReductionParameters(),
+            }, {
+                // Bin 10x10x10. Item type 7x10x5 with stackability id 0,
+                // and two item types 4x10x5 with stackability id 1, one
+                // copy each. The two 4x10x5 item types may share a stack,
+                // so they are not lifted (and they merge). The 7x10x5 item
+                // type is lifted to 8 along 'x' (the bin is shrunk to 8,
+                // and no other item fits beside it) and to 10 along 'z'.
+                fs::path("data") / "boxstacks" / "tests" / "bin_packing_lift_item_dimensions_requires_alone_in_stack",
+                ReductionParameters(),
+            }, {
+                // Semi-trailer truck 1360x240x260. Item types 1000x240x100
+                // and 400x240x100, one copy each, with different
+                // stackability ids. Along 'x', the 400x240x100 item type
+                // would be lifted to 1000, but the axle weights depend on
+                // the 'x' positions of the stacks, so nothing is lifted
+                // along 'x'. Both are lifted along 'z' to the height of the
+                // truck. 'skip_optimize_check': only the reduced instance
+                // is checked.
+                fs::path("data") / "boxstacks" / "tests" / "semi_trailer_truck_lift_item_dimensions_skips_x",
+                ReductionParameters(),
+                true,
             },
         }));
