@@ -3,11 +3,51 @@
 #include "packingsolver/rectangleguillotine/instance_builder.hpp"
 #include "rectangleguillotine/solution_builder.hpp"
 #include "algorithms/subset_sum_bound.hpp"
+#include "algorithms/dominated_items.hpp"
 
 #include <stdexcept>
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
+
+namespace
+{
+
+/**
+ * The consumption schedule 'item_type' has for 'resource_id' in bin type
+ * 'bin_type_id' of 'bin_type' (see 'ItemType::resources'), or 'nullptr' if
+ * it has none there. Same helper (same name, same semantics) as
+ * 'rectangle::reduction.cpp''s own local one, reimplemented here since it
+ * is not shared/exported.
+ */
+const std::vector<double>* find_item_type_schedule(
+        const ItemType& item_type,
+        BinTypeId bin_type_id,
+        const BinType& bin_type,
+        ResourceId resource_id)
+{
+    for (const ItemResourceConsumption& entry: item_type.resources[bin_type_id]) {
+        if (entry.resource_id == resource_id)
+            return &bin_type.resource(resource_id).item_consumptions[entry.consumption_pos].second;
+    }
+    return nullptr;
+}
+
+/**
+ * 'true' iff the nodes at depth 'depth' are delimited along 'x', i.e. are
+ * the result of cuts along 'x' ('l' and 'r' are cut positions), for a
+ * first cut orientation 'first_cut_orientation' ('Vertical' or
+ * 'Horizontal'). Mirrors 'SolutionBuilder::add_node'.
+ */
+bool delimited_along_x(
+        CutOrientation first_cut_orientation,
+        Depth depth)
+{
+    return (first_cut_orientation == CutOrientation::Vertical && depth % 2 == 1)
+        || (first_cut_orientation == CutOrientation::Horizontal && depth % 2 == 0);
+}
+
+}
 
 bool Reduction::remove_negative_profit_items_applies(const Instance& instance)
 {
@@ -135,6 +175,214 @@ void Reduction::remove_negative_profit_items(
     }
 }
 
+bool Reduction::full_bin_reduction_applies(const Instance& instance)
+{
+    if (instance.objective() != Objective::BinPacking)
+        return false;
+    // A single bin type, so that the bin of the reservations is
+    // unambiguous, without trims (they would complicate the cut trees of
+    // the dedicated bins), defects, fixed items (they would share the
+    // dedicated bins) or resources (a whole-bin aggregate the exchange
+    // arguments could violate).
+    if (instance.number_of_bin_types() != 1)
+        return false;
+    const BinType& bin_type = instance.bin_type(0);
+    if (bin_type.left_trim != 0
+            || bin_type.right_trim != 0
+            || bin_type.bottom_trim != 0
+            || bin_type.top_trim != 0) {
+        return false;
+    }
+    if (!bin_type.fixed_items.empty() || bin_type.number_of_resources() > 0)
+        return false;
+    // The item of a dedicated bin can be smaller than the bin, leaving a
+    // waste, and the exchange arguments compact the solutions (defects are
+    // checked there too).
+    if (!items_can_shrink(instance))
+        return false;
+    // The node of the item of a dedicated bin can be a plate.
+    const Parameters& parameters = instance.parameters();
+    if (parameters.maximum_distance_1_cuts >= 0
+            || parameters.maximum_distance_2_cuts >= 0) {
+        return false;
+    }
+    return true;
+}
+
+BinPos Reduction::number_of_dedicated_bins() const
+{
+    BinPos total = 0;
+    for (const FullBinItem& full_bin_item: full_bin_items_)
+        total += full_bin_item.copies;
+    for (const PerfectPair& pair: perfect_pairs_)
+        total += pair.copies;
+    return total;
+}
+
+Rectangle Reduction::shrunk_bin(
+        const std::vector<ReductionItemType>& reduction_item_types) const
+{
+    const BinType& bin_type = original_instance_->bin_type(0);
+    Length cut_thickness = original_instance_->parameters().cut_thickness;
+    Rectangle rect;
+    rect.w = max_achievable_dimension_sum(
+            reduction_item_types,
+            bin_type.rect.w + cut_thickness,
+            0,
+            cut_thickness,
+            -1);
+    rect.h = max_achievable_dimension_sum(
+            reduction_item_types,
+            bin_type.rect.h + cut_thickness,
+            1,
+            cut_thickness,
+            -1);
+    return rect;
+}
+
+Rectangle Reduction::true_rect(ItemTypeId item_type_id) const
+{
+    Rectangle rect = original_instance_->item_type(item_type_id).rect;
+    if (swapped_item_types_[item_type_id])
+        std::swap(rect.w, rect.h);
+    return rect;
+}
+
+bool Reduction::reduce_full_bin_items(
+        std::vector<ReductionItemType>& reduction_item_types)
+{
+    const BinType& bin_type = original_instance_->bin_type(0);
+    Length cut_thickness = original_instance_->parameters().cut_thickness;
+    bool found = false;
+    for (ItemTypeId item_type_id = 0;
+            item_type_id < (ItemTypeId)reduction_item_types.size();
+            ++item_type_id) {
+        ReductionItemType& item = reduction_item_types[item_type_id];
+        if (item.removed || item.copies == 0)
+            continue;
+        const ItemType& item_type = original_instance_->item_type(item_type_id);
+        if (item_type.copies_fixed > 0)
+            continue;
+        if (original_instance_->stack_size(item_type.stack_id) != item_type.copies)
+            continue;
+        // Recomputed for each item type, since each reservation removes
+        // items and can shrink the bin. If the item fills it in one of its
+        // orientations, it fills it in any orientation fitting the bin.
+        Rectangle bin = shrunk_bin(reduction_item_types);
+        bool matches = (item.rect.w + cut_thickness == bin.w
+                && item.rect.h + cut_thickness == bin.h)
+            || (!item.oriented
+                && item.rect.h + cut_thickness == bin.w
+                && item.rect.w + cut_thickness == bin.h);
+        if (!matches)
+            continue;
+        // Never more dedicated bins than the bin type has copies.
+        if (number_of_dedicated_bins() + item.copies > bin_type.copies)
+            continue;
+        full_bin_items_.push_back({item_type_id, item.copies});
+        item.copies = 0;
+        item.removed = true;
+        found = true;
+    }
+    return found;
+}
+
+bool Reduction::reduce_perfect_pairs(
+        std::vector<ReductionItemType>& reduction_item_types)
+{
+    const BinType& bin_type = original_instance_->bin_type(0);
+    const Parameters& parameters = original_instance_->parameters();
+    Length cut_thickness = parameters.cut_thickness;
+    CutOrientation first_cut_orientation = (parameters.first_stage_orientation == CutOrientation::Any)?
+        CutOrientation::Vertical:
+        parameters.first_stage_orientation;
+    // Deepest level of a node of the cut tree of a dedicated bin.
+    Depth maximum_depth = (parameters.cut_type == CutType::Exact)?
+        parameters.number_of_stages:
+        parameters.number_of_stages + 1;
+    auto item_ok = [this, &reduction_item_types](ItemTypeId item_type_id)
+    {
+        const ReductionItemType& item = reduction_item_types[item_type_id];
+        const ItemType& item_type = original_instance_->item_type(item_type_id);
+        return !item.removed
+            && item.copies > 0
+            && item.oriented
+            && item_type.copies_fixed == 0
+            && original_instance_->stack_size(item_type.stack_id) == item_type.copies;
+    };
+
+    bool found = false;
+    for (ItemTypeId item_type_id_1 = 0;
+            item_type_id_1 < (ItemTypeId)reduction_item_types.size();
+            ++item_type_id_1) {
+        if (!item_ok(item_type_id_1))
+            continue;
+        ReductionItemType& item_1 = reduction_item_types[item_type_id_1];
+        for (ItemTypeId item_type_id_2 = item_type_id_1;
+                item_type_id_2 < (ItemTypeId)reduction_item_types.size();
+                ++item_type_id_2) {
+            if (!item_ok(item_type_id_2))
+                continue;
+            ReductionItemType& item_2 = reduction_item_types[item_type_id_2];
+            // Two copies of the same item type.
+            if (item_type_id_2 == item_type_id_1 && item_1.copies < 2)
+                continue;
+
+            Rectangle bin = shrunk_bin(reduction_item_types);
+            int pair_axis = -1;
+            if (item_1.rect.h + cut_thickness == bin.h
+                    && item_2.rect.h + cut_thickness == bin.h
+                    && item_1.rect.w + cut_thickness + item_2.rect.w + cut_thickness == bin.w) {
+                pair_axis = 0;
+            } else if (item_1.rect.w + cut_thickness == bin.w
+                    && item_2.rect.w + cut_thickness == bin.w
+                    && item_1.rect.h + cut_thickness + item_2.rect.h + cut_thickness == bin.h) {
+                pair_axis = 1;
+            }
+            if (pair_axis == -1)
+                continue;
+
+            // If the first stage is not along the axis of the pair, the
+            // items are second-stage nodes, which may need a trimming cut
+            // (see 'unreduce_solution').
+            if (delimited_along_x(first_cut_orientation, 1) != (pair_axis == 0)) {
+                Rectangle rect_1 = original_instance_->item_type(item_type_id_1).rect;
+                Rectangle rect_2 = original_instance_->item_type(item_type_id_2).rect;
+                if (item_1.swapped)
+                    std::swap(rect_1.w, rect_1.h);
+                if (item_2.swapped)
+                    std::swap(rect_2.w, rect_2.h);
+                Length length_1 = (pair_axis == 0)? rect_1.h: rect_1.w;
+                Length length_2 = (pair_axis == 0)? rect_2.h: rect_2.w;
+                if (length_1 != length_2 && maximum_depth < 3)
+                    continue;
+            }
+
+            ItemPos copies = (item_type_id_2 == item_type_id_1)?
+                item_1.copies / 2:
+                (std::min)(item_1.copies, item_2.copies);
+            // Never more dedicated bins than the bin type has copies.
+            if (number_of_dedicated_bins() + copies > bin_type.copies)
+                continue;
+            perfect_pairs_.push_back({item_type_id_1, item_type_id_2, pair_axis, copies});
+            if (item_type_id_2 == item_type_id_1) {
+                item_1.copies -= 2 * copies;
+            } else {
+                item_1.copies -= copies;
+                item_2.copies -= copies;
+                if (item_2.copies == 0)
+                    item_2.removed = true;
+            }
+            if (item_1.copies == 0)
+                item_1.removed = true;
+            found = true;
+            if (item_1.removed)
+                break;
+        }
+    }
+    return found;
+}
+
 bool Reduction::lift_item_dimensions_applies(const Instance& instance)
 {
     // Objectives only depending on which items and bins are used (see the
@@ -151,25 +399,16 @@ bool Reduction::lift_item_dimensions_applies(const Instance& instance)
     if (instance.number_of_bin_types() != 1)
         return false;
     const BinType& bin_type = instance.bin_type(0);
-    if (!bin_type.defects.empty() || !bin_type.fixed_items.empty())
+    if (!bin_type.fixed_items.empty())
         return false;
-    const Parameters& parameters = instance.parameters();
-    if (parameters.cut_type != CutType::NonExact
-            && parameters.cut_type != CutType::Exact
-            && parameters.cut_type != CutType::Roadef2018) {
+    // 'unreduce_solution' shrinks the enlarged items in their nodes. The
+    // compaction can also make a distance between two cuts or a waste
+    // smaller, which 'items_can_shrink' rules out too.
+    if (!items_can_shrink(instance))
         return false;
-    }
-    // The compaction can make a distance between two cuts or a waste
-    // smaller, and 'unreduce_solution' adds cuts.
-    if (parameters.minimum_distance_1_cuts > 0
-            || parameters.minimum_distance_2_cuts > 0
-            || parameters.minimum_waste_length > 0
-            || parameters.maximum_number_1_cuts >= 0
-            || parameters.maximum_number_2_cuts >= 0) {
-        return false;
-    }
     // With a cut thickness, the extent of a chain of items next to a trim
     // depends on whether the trim is cut.
+    const Parameters& parameters = instance.parameters();
     if (parameters.cut_thickness > 0
             && (bin_type.left_trim > 0
                 || bin_type.right_trim > 0
@@ -178,25 +417,6 @@ bool Reduction::lift_item_dimensions_applies(const Instance& instance)
         return false;
     }
     return true;
-}
-
-namespace
-{
-
-/**
- * 'true' iff the nodes at depth 'depth' are delimited along 'x', i.e. are
- * the result of cuts along 'x' ('l' and 'r' are cut positions), for a
- * first cut orientation 'first_cut_orientation' ('Vertical' or
- * 'Horizontal'). Mirrors 'SolutionBuilder::add_node'.
- */
-bool delimited_along_x(
-        CutOrientation first_cut_orientation,
-        Depth depth)
-{
-    return (first_cut_orientation == CutOrientation::Vertical && depth % 2 == 1)
-        || (first_cut_orientation == CutOrientation::Horizontal && depth % 2 == 0);
-}
-
 }
 
 bool Reduction::lift_item_dimensions_applies_axis(
@@ -208,8 +428,41 @@ bool Reduction::lift_item_dimensions_applies_axis(
         return false;
     if (!along_x && instance.objective() == Objective::OpenDimensionY)
         return false;
+    return items_can_shrink_along(instance, axis);
+}
 
+bool Reduction::items_can_shrink(const Instance& instance)
+{
+    const Parameters& parameters = instance.parameters();
+    if (parameters.cut_type != CutType::NonExact
+            && parameters.cut_type != CutType::Exact
+            && parameters.cut_type != CutType::Roadef2018) {
+        return false;
+    }
+    // Shrinking an item adds cuts, and the waste next to it may be small.
+    if (parameters.minimum_distance_1_cuts > 0
+            || parameters.minimum_distance_2_cuts > 0
+            || parameters.minimum_waste_length > 0
+            || parameters.maximum_number_1_cuts >= 0
+            || parameters.maximum_number_2_cuts >= 0) {
+        return false;
+    }
+    // A new cut could go through a defect.
+    for (BinTypeId bin_type_id = 0;
+            bin_type_id < instance.number_of_bin_types();
+            ++bin_type_id) {
+        if (!instance.bin_type(bin_type_id).defects.empty())
+            return false;
+    }
+    return true;
+}
+
+bool Reduction::items_can_shrink_along(
+        const Instance& instance,
+        int axis)
+{
     // See the class-level doc comment for the cut type restrictions.
+    bool along_x = (axis == 0);
     const Parameters& parameters = instance.parameters();
     if (parameters.cut_type == CutType::NonExact)
         return true;
@@ -219,6 +472,378 @@ bool Reduction::lift_item_dimensions_applies_axis(
         parameters.number_of_stages:
         parameters.number_of_stages + 1;
     return delimited_along_x(parameters.first_stage_orientation, depth) == along_x;
+}
+
+bool Reduction::fits_maximum_distances(
+        const Instance& instance,
+        const Rectangle& rect)
+{
+    // 1-cuts are along 'x' if the first stage is vertical, 2-cuts along
+    // the other axis.
+    const Parameters& parameters = instance.parameters();
+    CutOrientation first_stage_orientation = parameters.first_stage_orientation;
+    if (parameters.maximum_distance_1_cuts >= 0) {
+        if ((first_stage_orientation != CutOrientation::Horizontal
+                    && rect.w > parameters.maximum_distance_1_cuts)
+                || (first_stage_orientation != CutOrientation::Vertical
+                    && rect.h > parameters.maximum_distance_1_cuts)) {
+            return false;
+        }
+    }
+    if (parameters.maximum_distance_2_cuts >= 0) {
+        if ((first_stage_orientation != CutOrientation::Vertical
+                    && rect.w > parameters.maximum_distance_2_cuts)
+                || (first_stage_orientation != CutOrientation::Horizontal
+                    && rect.h > parameters.maximum_distance_2_cuts)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Reduction::remove_dominated_items_applies(const Instance& instance)
+{
+    return instance.objective() == Objective::Knapsack
+        && items_can_shrink(instance);
+}
+
+bool Reduction::remove_dominated_bin_types_applies(const Instance& instance)
+{
+    // Only 'Knapsack', 'Feasibility' and 'VariableSizedBinPacking': with
+    // the bin packing objectives ('BinPacking', 'BinPackingWithLeftovers',
+    // 'BinPackingCuttingCost'), the bin types must be used in the order
+    // they are declared, so removing one would make the later ones
+    // available earlier than the original instance allows.
+    if (instance.objective() != Objective::Knapsack
+            && instance.objective() != Objective::Feasibility
+            && instance.objective() != Objective::VariableSizedBinPacking) {
+        return false;
+    }
+    return instance.number_of_bin_types() > 1;
+}
+
+namespace
+{
+
+/** Largest value in 'schedule', or 0 if there is none. */
+double maximum_consumption(const std::vector<double>* schedule)
+{
+    if (schedule == nullptr || schedule->empty())
+        return 0.0;
+    return *std::max_element(schedule->begin(), schedule->end());
+}
+
+/** Smallest value in 'schedule', or 0 if there is none. */
+double minimum_consumption(const std::vector<double>* schedule)
+{
+    if (schedule == nullptr || schedule->empty())
+        return 0.0;
+    return *std::min_element(schedule->begin(), schedule->end());
+}
+
+/** The orientations of an item type: its dimensions, and rotated. */
+std::vector<Rectangle> orientations(
+        const Rectangle& rect,
+        bool oriented)
+{
+    std::vector<Rectangle> rects = {rect};
+    if (!oriented && rect.w != rect.h) {
+        Rectangle rotated = rect;
+        std::swap(rotated.w, rotated.h);
+        rects.push_back(rotated);
+    }
+    return rects;
+}
+
+/** Width of 'bin_type' without its trims. */
+Length usable_width(const BinType& bin_type)
+{
+    return bin_type.rect.w - bin_type.left_trim - bin_type.right_trim;
+}
+
+/** Height of 'bin_type' without its trims. */
+Length usable_height(const BinType& bin_type)
+{
+    return bin_type.rect.h - bin_type.bottom_trim - bin_type.top_trim;
+}
+
+}
+
+bool Reduction::item_type_dominates(
+        const std::vector<ReductionItemType>& reduction_item_types,
+        ItemTypeId item_type_id_a,
+        ItemTypeId item_type_id_b) const
+{
+    if (item_type_id_a == item_type_id_b)
+        return false;
+    const ItemType& item_type_a = original_instance_->item_type(item_type_id_a);
+    const ItemType& item_type_b = original_instance_->item_type(item_type_id_b);
+    const ReductionItemType& item_a = reduction_item_types[item_type_id_a];
+    const ReductionItemType& item_b = reduction_item_types[item_type_id_b];
+    if (item_type_a.profit < item_type_b.profit)
+        return false;
+    if (item_type_a.copies_fixed > 0 || item_type_b.copies_fixed > 0)
+        return false;
+    // Alone in their stacks (see 'items_mergeable').
+    if (original_instance_->stack_size(item_type_a.stack_id) != item_type_a.copies
+            || original_instance_->stack_size(item_type_b.stack_id) != item_type_b.copies) {
+        return false;
+    }
+
+    // A fits inside B, whatever the orientation of B, without shrinking
+    // along an axis items can't shrink along. The node of B can become a
+    // plate.
+    bool shrink_x = items_can_shrink_along(*original_instance_, 0);
+    bool shrink_y = items_can_shrink_along(*original_instance_, 1);
+    for (const Rectangle& rect_b: orientations(item_b.rect, item_b.oriented)) {
+        if (!fits_maximum_distances(*original_instance_, rect_b))
+            return false;
+        bool fits = false;
+        for (const Rectangle& rect_a: orientations(item_a.rect, item_a.oriented)) {
+            if (rect_a.w > rect_b.w || rect_a.h > rect_b.h)
+                continue;
+            if (!shrink_x && rect_a.w != rect_b.w)
+                continue;
+            if (!shrink_y && rect_a.h != rect_b.h)
+                continue;
+            fits = true;
+            break;
+        }
+        if (!fits)
+            return false;
+    }
+
+    // Resources: the largest consumption of A must not exceed the smallest
+    // consumption of B, since copies of A and B are not replaced at the
+    // same copy index.
+    for (BinTypeId bin_type_id = 0;
+            bin_type_id < original_instance_->number_of_bin_types();
+            ++bin_type_id) {
+        const BinType& bin_type = original_instance_->bin_type(bin_type_id);
+        for (ResourceId resource_id = 0;
+                resource_id < bin_type.number_of_resources();
+                ++resource_id) {
+            if (maximum_consumption(find_item_type_schedule(item_type_a, bin_type_id, bin_type, resource_id))
+                    > minimum_consumption(find_item_type_schedule(item_type_b, bin_type_id, bin_type, resource_id))) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool Reduction::items_incompatible(
+        const std::vector<ReductionItemType>& reduction_item_types,
+        ItemTypeId item_type_id_1,
+        ItemTypeId item_type_id_2,
+        BinTypeId bin_type_id) const
+{
+    const ItemType& item_type_1 = original_instance_->item_type(item_type_id_1);
+    const ItemType& item_type_2 = original_instance_->item_type(item_type_id_2);
+    const BinType& bin_type = original_instance_->bin_type(bin_type_id);
+    const ReductionItemType& item_1 = reduction_item_types[item_type_id_1];
+    const ReductionItemType& item_2 = reduction_item_types[item_type_id_2];
+    Length width = usable_width(bin_type);
+    Length height = usable_height(bin_type);
+    Length cut_thickness = original_instance_->parameters().cut_thickness;
+
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type.number_of_resources();
+            ++resource_id) {
+        const Resource& resource = bin_type.resource(resource_id);
+        if (resource.penalize)
+            continue;
+        if (minimum_consumption(find_item_type_schedule(item_type_1, bin_type_id, bin_type, resource_id))
+                + minimum_consumption(find_item_type_schedule(item_type_2, bin_type_id, bin_type, resource_id))
+                > resource.capacity) {
+            return true;
+        }
+    }
+
+    // Two items fit together iff, in some orientations, a cut separates
+    // them: side by side along 'x' or along 'y'.
+    for (const Rectangle& rect_1: orientations(item_1.rect, item_1.oriented)) {
+        if (rect_1.w > width || rect_1.h > height)
+            continue;
+        for (const Rectangle& rect_2: orientations(item_2.rect, item_2.oriented)) {
+            if (rect_2.w > width || rect_2.h > height)
+                continue;
+            if (rect_1.w + cut_thickness + rect_2.w <= width
+                    || rect_1.h + cut_thickness + rect_2.h <= height) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+ItemPos Reduction::dominated_item_copies_bound(
+        const std::vector<ReductionItemType>& reduction_item_types,
+        ItemTypeId item_type_id_a,
+        ItemTypeId item_type_id_b) const
+{
+    const ReductionItemType& item_a = reduction_item_types[item_type_id_a];
+    const ReductionItemType& item_b = reduction_item_types[item_type_id_b];
+    std::vector<DominatedItemsBinType> bin_types;
+    for (BinTypeId bin_type_id = 0;
+            bin_type_id < original_instance_->number_of_bin_types();
+            ++bin_type_id) {
+        const BinType& bin_type = original_instance_->bin_type(bin_type_id);
+        Length width = usable_width(bin_type);
+        Length height = usable_height(bin_type);
+        auto fits = [width, height](const ReductionItemType& item)
+        {
+            for (const Rectangle& rect: orientations(item.rect, item.oriented))
+                if (rect.w <= width && rect.h <= height)
+                    return true;
+            return false;
+        };
+        DominatedItemsBinType dominated_items_bin_type;
+        dominated_items_bin_type.copies = bin_type.copies;
+        dominated_items_bin_type.fits_b = fits(item_b);
+        bool fits_a = fits(item_a);
+        if (fits_a || dominated_items_bin_type.fits_b) {
+            // A fits inside B, so it has the smallest area.
+            Counter maximum_number_of_items = (width * height) / (item_a.rect.w * item_a.rect.h);
+            bool incompatible_a_a = items_incompatible(
+                    reduction_item_types, item_type_id_a, item_type_id_a, bin_type_id);
+            dominated_items_bin_type.exclusive
+                = items_incompatible(reduction_item_types, item_type_id_a, item_type_id_b, bin_type_id)
+                && items_incompatible(reduction_item_types, item_type_id_b, item_type_id_b, bin_type_id);
+            dominated_items_bin_type.maximum_number_of_copies_a = (!fits_a)? 0:
+                (incompatible_a_a)? 1: maximum_number_of_items;
+            dominated_items_bin_type.maximum_number_of_items
+                = (incompatible_a_a && dominated_items_bin_type.exclusive)?
+                1: maximum_number_of_items;
+        }
+        bin_types.push_back(dominated_items_bin_type);
+    }
+    return (ItemPos)packingsolver::dominated_item_copies_bound(
+            item_a.copies,
+            item_b.copies,
+            bin_types);
+}
+
+void Reduction::remove_dominated_items(
+        std::vector<ReductionItemType>& reduction_item_types) const
+{
+    for (ItemTypeId item_type_id_b = 0;
+            item_type_id_b < (ItemTypeId)reduction_item_types.size();
+            ++item_type_id_b) {
+        if (reduction_item_types[item_type_id_b].removed)
+            continue;
+        if (effective_copies_min(reduction_item_types, item_type_id_b) != 0)
+            continue;
+        for (ItemTypeId item_type_id_a = 0;
+                item_type_id_a < (ItemTypeId)reduction_item_types.size();
+                ++item_type_id_a) {
+            if (item_type_id_a == item_type_id_b)
+                continue;
+            if (reduction_item_types[item_type_id_a].removed)
+                continue;
+            if (!item_type_dominates(reduction_item_types, item_type_id_a, item_type_id_b))
+                continue;
+            ItemPos bound = dominated_item_copies_bound(
+                    reduction_item_types, item_type_id_a, item_type_id_b);
+            ReductionItemType& item_b = reduction_item_types[item_type_id_b];
+            if (bound >= item_b.copies)
+                continue;
+            item_b.copies = bound;
+            if (item_b.copies == 0) {
+                item_b.removed = true;
+                break;
+            }
+        }
+    }
+}
+
+bool Reduction::bin_type_dominates(
+        BinTypeId bin_type_id_a,
+        BinTypeId bin_type_id_b) const
+{
+    if (bin_type_id_a == bin_type_id_b)
+        return false;
+    const BinType& bin_type_a = original_instance_->bin_type(bin_type_id_a);
+    const BinType& bin_type_b = original_instance_->bin_type(bin_type_id_b);
+    const Parameters& parameters = original_instance_->parameters();
+
+    if (bin_type_a.rect.w < bin_type_b.rect.w || bin_type_a.rect.h < bin_type_b.rect.h)
+        return false;
+    // The extra length of A becomes wastes and turns item nodes into
+    // plates: see the class-level doc comment.
+    if (parameters.minimum_distance_1_cuts > 0
+            || parameters.minimum_distance_2_cuts > 0
+            || parameters.maximum_distance_1_cuts >= 0
+            || parameters.maximum_distance_2_cuts >= 0
+            || parameters.minimum_waste_length > 0
+            || parameters.maximum_number_1_cuts >= 0
+            || parameters.maximum_number_2_cuts >= 0) {
+        if (bin_type_a.rect.w != bin_type_b.rect.w || bin_type_a.rect.h != bin_type_b.rect.h)
+            return false;
+    }
+    if (bin_type_a.left_trim != bin_type_b.left_trim
+            || bin_type_a.right_trim != bin_type_b.right_trim
+            || bin_type_a.bottom_trim != bin_type_b.bottom_trim
+            || bin_type_a.top_trim != bin_type_b.top_trim
+            || bin_type_a.left_trim_type != bin_type_b.left_trim_type
+            || bin_type_a.right_trim_type != bin_type_b.right_trim_type
+            || bin_type_a.bottom_trim_type != bin_type_b.bottom_trim_type
+            || bin_type_a.top_trim_type != bin_type_b.top_trim_type) {
+        return false;
+    }
+    if (bin_type_a.cost > bin_type_b.cost)
+        return false;
+    if (!bin_type_a.defects.empty() || !bin_type_b.defects.empty())
+        return false;
+    if (!bin_type_a.fixed_items.empty() || !bin_type_b.fixed_items.empty())
+        return false;
+
+    // Resources: a resource id carries no meaning across two bin types, so
+    // any resource of A blocks dominance; B alone having resources is
+    // fine, except a 'penalize' one with a negative 'penalty' (a profit
+    // bonus A could never give) - see rectangle's own 'bin_type_dominates'.
+    if (bin_type_a.number_of_resources() > 0)
+        return false;
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type_b.number_of_resources();
+            ++resource_id) {
+        const Resource& resource = bin_type_b.resource(resource_id);
+        if (resource.penalize && resource.penalty < 0)
+            return false;
+    }
+    return true;
+}
+
+std::vector<bool> Reduction::compute_dominated_bin_types() const
+{
+    std::vector<bool> dominated(original_instance_->number_of_bin_types(), false);
+    BinPos number_of_items = original_instance_->number_of_items();
+    for (BinTypeId bin_type_id_b = 0;
+            bin_type_id_b < original_instance_->number_of_bin_types();
+            ++bin_type_id_b) {
+        // A bin type that must be used can not be replaced.
+        if (original_instance_->bin_type(bin_type_id_b).copies_min != 0)
+            continue;
+        for (BinTypeId bin_type_id_a = 0;
+                bin_type_id_a < original_instance_->number_of_bin_types();
+                ++bin_type_id_a) {
+            if (bin_type_id_a == bin_type_id_b)
+                continue;
+            if (dominated[bin_type_id_a])
+                continue;
+            // A needs enough copies to replace every bin of B a solution
+            // could use, on top of its own mandatory ones: a solution never
+            // needs more non-empty bins than items.
+            const BinType& bin_type_a = original_instance_->bin_type(bin_type_id_a);
+            if (bin_type_a.copies < number_of_items + bin_type_a.copies_min)
+                continue;
+            if (!bin_type_dominates(bin_type_id_a, bin_type_id_b))
+                continue;
+            dominated[bin_type_id_b] = true;
+            break;
+        }
+    }
+    return dominated;
 }
 
 Length Reduction::max_achievable_dimension_sum(
@@ -327,15 +952,7 @@ bool Reduction::lift_item_dimensions(
                 continue;
             // 'unreduce_solution' may turn the node of the item into a
             // plate, subject to the maximum distances between cuts.
-            bool fits_maximum_distances = true;
-            for (const MaximumDistance& maximum_distance: maximum_distances) {
-                if ((maximum_distance.along_x && item.rect.w > maximum_distance.distance)
-                        || (maximum_distance.along_y && item.rect.h > maximum_distance.distance)) {
-                    fits_maximum_distances = false;
-                    break;
-                }
-            }
-            if (!fits_maximum_distances)
+            if (!fits_maximum_distances(*original_instance_, item.rect))
                 continue;
 
             Length& item_length = (along_x)? item.rect.w: item.rect.h;
@@ -360,31 +977,6 @@ bool Reduction::lift_item_dimensions(
         }
     }
     return found;
-}
-
-namespace
-{
-
-/**
- * The consumption schedule 'item_type' has for 'resource_id' in bin type
- * 'bin_type_id' of 'bin_type' (see 'ItemType::resources'), or 'nullptr' if
- * it has none there. Same helper (same name, same semantics) as
- * 'rectangle::reduction.cpp''s own local one, reimplemented here since it
- * is not shared/exported.
- */
-const std::vector<double>* find_item_type_schedule(
-        const ItemType& item_type,
-        BinTypeId bin_type_id,
-        const BinType& bin_type,
-        ResourceId resource_id)
-{
-    for (const ItemResourceConsumption& entry: item_type.resources[bin_type_id]) {
-        if (entry.resource_id == resource_id)
-            return &bin_type.resource(resource_id).item_consumptions[entry.consumption_pos].second;
-    }
-    return nullptr;
-}
-
 }
 
 bool Reduction::items_mergeable(
@@ -484,7 +1076,8 @@ void Reduction::merge_identical_items(
 }
 
 Instance Reduction::reduction_to_instance(
-        const std::vector<ReductionItemType>& reduction_item_types)
+        const std::vector<ReductionItemType>& reduction_item_types,
+        const std::vector<bool>& bin_type_removed)
 {
     InstanceBuilder instance_builder;
     instance_builder.set_objective(original_instance_->objective());
@@ -492,12 +1085,44 @@ Instance Reduction::reduction_to_instance(
     instance_builder.set_parameters(original_instance_->parameters());
     instance_builder.set_feasibility_callback(original_instance_->feasibility_callback());
 
-    // Every bin type is copied over unchanged - no bin type removal in
-    // this two-operation class.
+    // Every bin type not dominated (see 'compute_dominated_bin_types') is
+    // copied over unchanged.
+    reduced_to_original_bin_type_id_.clear();
+    std::vector<BinTypeId> original_to_reduced_bin_type_id(
+            original_instance_->number_of_bin_types(), -1);
     for (BinTypeId bin_type_id = 0;
             bin_type_id < original_instance_->number_of_bin_types();
             ++bin_type_id) {
-        instance_builder.add_bin_type(*original_instance_, bin_type_id);
+        if (bin_type_id < (BinTypeId)bin_type_removed.size()
+                && bin_type_removed[bin_type_id]) {
+            continue;
+        }
+        original_to_reduced_bin_type_id[bin_type_id]
+            = instance_builder.add_bin_type(*original_instance_, bin_type_id);
+        reduced_to_original_bin_type_id_.push_back(bin_type_id);
+        // The dedicated bins (see 'reduce_full_bin_items'/
+        // 'reduce_perfect_pairs', single bin type) are left out of the
+        // reduced instance. They never take more than the bin type's
+        // copies; if they take all of them while items remain, the
+        // instance is infeasible.
+        BinPos number_of_dedicated_bins = this->number_of_dedicated_bins();
+        if (number_of_dedicated_bins > 0) {
+            BinPos copies = original_instance_->bin_type(bin_type_id).copies - number_of_dedicated_bins;
+            if (copies > 0) {
+                instance_builder.set_bin_type_copies(
+                        original_to_reduced_bin_type_id[bin_type_id],
+                        copies);
+            } else {
+                bool remaining_items = false;
+                for (const ReductionItemType& item: reduction_item_types)
+                    if (item.copies > 0)
+                        remaining_items = true;
+                // Without remaining items, the bin type keeps its copies,
+                // never used.
+                if (remaining_items)
+                    proven_infeasible_ = true;
+            }
+        }
     }
 
     // Renumber the stacks of the remaining item types consecutively. The
@@ -560,18 +1185,20 @@ Instance Reduction::reduction_to_instance(
         instance_builder.set_item_type_copies_min(new_item_type_id, total_copies_min);
         // Copy resource consumptions (the bin types themselves, including
         // their resources, were already copied above via 'add_bin_type(
-        // *original_instance_, bin_type_id)', so ids still line up 1:1
-        // with 'original_instance_' - no bin type was ever skipped here).
+        // *original_instance_, bin_type_id)', with their resources in the
+        // same order).
         for (BinTypeId bin_type_id = 0;
                 bin_type_id < original_instance_->number_of_bin_types();
                 ++bin_type_id) {
+            if (original_to_reduced_bin_type_id[bin_type_id] == -1)
+                continue;
             const BinType& original_bin_type = original_instance_->bin_type(bin_type_id);
             for (const ItemResourceConsumption& consumption: original_item_type.resources[bin_type_id]) {
                 const std::vector<double>& schedule
                     = original_bin_type.resource(consumption.resource_id)
                         .item_consumptions[consumption.consumption_pos].second;
                 instance_builder.add_resource_consumption(
-                        bin_type_id,
+                        original_to_reduced_bin_type_id[bin_type_id],
                         consumption.resource_id,
                         new_item_type_id,
                         schedule);
@@ -612,10 +1239,30 @@ Reduction::Reduction(
                 && parameters.remove_negative_profit_items) {
             remove_negative_profit_items(reduction_item_types);
         }
+        // Before lifting: the dominance compares the dimensions before it.
+        if (parameters.remove_dominated_items
+                && remove_dominated_items_applies(instance)) {
+            remove_dominated_items(reduction_item_types);
+        }
         if (parameters.lift_item_dimensions
                 && lift_item_dimensions_applies(instance)
                 && !parameters.timer.needs_to_end()) {
             lift_item_dimensions(reduction_item_types);
+        }
+        // After lifting, which can make an item fill the shrunk bin.
+        // Reserving a dedicated bin can shrink the bin further.
+        if (full_bin_reduction_applies(instance)) {
+            for (;;) {
+                if (parameters.timer.needs_to_end())
+                    break;
+                bool found = false;
+                if (parameters.reduce_full_bin_items)
+                    found |= reduce_full_bin_items(reduction_item_types);
+                if (parameters.reduce_perfect_pairs)
+                    found |= reduce_perfect_pairs(reduction_item_types);
+                if (!found)
+                    break;
+            }
         }
         if (parameters.merge_identical_items)
             merge_identical_items(reduction_item_types);
@@ -626,7 +1273,14 @@ Reduction::Reduction(
         swapped_item_types_.push_back(item.swapped);
     }
 
-    instance_ = reduction_to_instance(reduction_item_types);
+    std::vector<bool> bin_type_removed;
+    if (parameters.reduce
+            && parameters.remove_dominated_bin_types
+            && remove_dominated_bin_types_applies(instance)) {
+        bin_type_removed = compute_dominated_bin_types();
+    }
+
+    instance_ = reduction_to_instance(reduction_item_types, bin_type_removed);
 }
 
 namespace
@@ -960,7 +1614,7 @@ Solution Reduction::unreduce_solution(
 
             // Replay the cut tree (see 'add_subtree').
             solution_builder.add_bin(
-                    solution_bin.bin_type_id,
+                    reduced_to_original_bin_type_id_[solution_bin.bin_type_id],
                     batch,
                     solution_bin.first_cut_orientation);
             add_subtree(
@@ -982,6 +1636,59 @@ Solution Reduction::unreduce_solution(
 
         for (ItemTypeId reduced_item_type_id: touched_types)
             slot_count[reduced_item_type_id] = 0;
+    }
+
+    // The dedicated bins, left out of 'instance_' (single bin type without
+    // trims, see 'full_bin_reduction_applies'), with the true dimensions of
+    // the items. Items are placed side by side along an axis from the
+    // origin; a node larger than its item gets a trimming child.
+    {
+        const BinType& bin_type = original_instance_->bin_type(0);
+        Length cut_thickness = parameters.cut_thickness;
+        CutOrientation first_cut_orientation = (parameters.first_stage_orientation == CutOrientation::Any)?
+            CutOrientation::Vertical:
+            parameters.first_stage_orientation;
+        auto add_dedicated_bin = [&](
+                BinPos copies,
+                const std::vector<ItemTypeId>& item_type_ids,
+                int axis)
+        {
+            bool along_x = (axis == 0);
+            solution_builder.add_bin(0, copies, first_cut_orientation);
+            // Length of the bin along the other axis, and of the items.
+            Length bin_other = (along_x)? bin_type.rect.h: bin_type.rect.w;
+            Length items_other = 0;
+            for (ItemTypeId item_type_id: item_type_ids) {
+                Rectangle rect = true_rect(item_type_id);
+                items_other = (std::max)(items_other, (along_x)? rect.h: rect.w);
+            }
+            // First-stage nodes along the axis, or a single first-stage
+            // node holding second-stage nodes along it.
+            bool first_stage = (delimited_along_x(first_cut_orientation, 1) == along_x);
+            Depth depth = (first_stage)? 1: 2;
+            Length node_other = (first_stage)? bin_other: items_other;
+            if (!first_stage)
+                solution_builder.add_node(1, items_other);
+            Length start = 0;
+            for (ItemTypeId item_type_id: item_type_ids) {
+                Rectangle rect = true_rect(item_type_id);
+                Length length = (along_x)? rect.w: rect.h;
+                Length other = (along_x)? rect.h: rect.w;
+                solution_builder.add_node(depth, start + length);
+                if (other < node_other)
+                    solution_builder.add_node(depth + 1, other);
+                solution_builder.set_last_node_item(item_type_id);
+                start += length + cut_thickness;
+            }
+        };
+        for (const FullBinItem& full_bin_item: full_bin_items_)
+            add_dedicated_bin(full_bin_item.copies, {full_bin_item.item_type_id}, 0);
+        for (const PerfectPair& pair: perfect_pairs_) {
+            add_dedicated_bin(
+                    pair.copies,
+                    {pair.item_type_id_1, pair.item_type_id_2},
+                    pair.axis);
+        }
     }
 
     return solution_builder.build();

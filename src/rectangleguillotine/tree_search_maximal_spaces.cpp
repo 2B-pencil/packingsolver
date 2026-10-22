@@ -10,7 +10,6 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;
-using packingsolver::rectangleguillotine::Output;
 
 ////////////////////////////////////////////////////////////////////////////////
 //////////////////////// BranchingSchemeMaximalSpaces //////////////////////////
@@ -908,7 +907,7 @@ const packingsolver::rectangleguillotine::TreeSearchMaximalSpacesOutput packings
     packingsolver::Parameters<Instance, Solution, Output> local_parameters;
     local_parameters.verbosity_level = 0;
     local_parameters.timer = parameters.timer;
-    packingsolver::rectangleguillotine::Output local_output(instance);
+    Output local_output(instance);
     AlgorithmFormatter local_algorithm_formatter(instance, local_parameters, local_output);
     if (deterministic)
         ibs_parameters.timer.add_end_boolean(&local_algorithm_formatter.end_boolean());
@@ -928,25 +927,9 @@ const packingsolver::rectangleguillotine::TreeSearchMaximalSpacesOutput packings
             ss << "n " << tssibs_output.maximum_size_of_the_queue;
             tree_search_algorithm_formatter->update_solution(solution, ss.str());
 
-            if (tssibs_output.optimal) {
-                packingsolver::rectangleguillotine::Output bounds_output(solution.instance());
-                // 'Solution::operator<' always ranks a feasible solution
-                // above an infeasible one, regardless of objective, so
-                // 'solution_pool.best()' can only be infeasible here if no
-                // feasible solution was found anywhere in this
-                // now-exhaustive search: a genuine infeasibility proof,
-                // independent of objective.
-                if (!solution.feasible()) {
-                    // For every non-Knapsack objective (Feasibility
-                    // included), 'copies_min' defaults to 'copies', so this
-                    // already subsumes "not everything got packed" - no
-                    // separate 'full()' check needed.
-                    bounds_output.is_proven_infeasible = true;
-                } else if (solution.instance().objective() == packingsolver::Objective::Knapsack) {
-                    bounds_output.knapsack_bound = solution.profit();
-                }
-                tree_search_algorithm_formatter->update_bounds(bounds_output);
-            }
+            // No bound is reported, even when the search is exhaustive: the
+            // branching scheme doesn't enumerate every packing (restricted
+            // blocks, fixed splits of the maximal spaces).
         };
 
     std::exception_ptr exception_ptr;

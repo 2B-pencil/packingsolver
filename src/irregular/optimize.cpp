@@ -313,6 +313,7 @@ void optimize_tree_search(
 
         // Solve instance.
         OptimizeParameters last_bin_parameters;
+        last_bin_parameters.seed = parameters.seed;
         last_bin_parameters.verbosity_level = 0;
         last_bin_parameters.timer = parameters.timer;
         last_bin_parameters.optimization_mode = parameters.optimization_mode;
@@ -320,6 +321,8 @@ void optimize_tree_search(
         last_bin_parameters.not_anytime_tree_search_queue_size = parameters.not_anytime_tree_search_queue_size;
         last_bin_parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement
             = parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement;
+        last_bin_parameters.not_anytime_local_search_maximum_number_of_failed_separations
+            = parameters.not_anytime_local_search_maximum_number_of_failed_separations;
         last_bin_parameters.tree_search_guides = {2, 3};
         last_bin_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
         // Respect the caller's explicit algorithm selection (if any), rather
@@ -327,7 +330,8 @@ void optimize_tree_search(
         // single-bin sub-instance.
         last_bin_parameters.use_tree_search = parameters.use_tree_search;
         last_bin_parameters.use_tree_search_periodic_packing = parameters.use_tree_search_periodic_packing;
-        last_bin_parameters.use_local_search = parameters.use_local_search;
+        last_bin_parameters.use_local_search_linear_programming = parameters.use_local_search_linear_programming;
+        last_bin_parameters.use_local_search_direct_trigonometry = parameters.use_local_search_direct_trigonometry;
         last_bin_parameters.use_milp_raster = parameters.use_milp_raster;
         auto last_bin_output = optimize(last_bin_instance, last_bin_parameters);
 
@@ -361,23 +365,59 @@ void optimize_tree_search(
 void optimize_local_search(
         const Instance& instance,
         const OptimizeParameters& parameters,
-        AlgorithmFormatter& algorithm_formatter)
+        AlgorithmFormatter& algorithm_formatter,
+        LocalSearchEngine engine)
 {
     LocalSearchParameters ls_parameters;
+    ls_parameters.engine = engine;
     ls_parameters.verbosity_level = 0;
     ls_parameters.timer = parameters.timer;
-    if (parameters.optimization_mode != OptimizationMode::Anytime) {
+    ls_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    if (parameters.optimization_mode == OptimizationMode::Anytime) {
+        ls_parameters.maximum_number_of_failed_separations = -1;
+    } else {
         ls_parameters.maximum_number_of_iterations_without_improvement
             = parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement;
+        ls_parameters.maximum_number_of_failed_separations
+            = parameters.not_anytime_local_search_maximum_number_of_failed_separations;
     }
-    ls_parameters.new_solution_callback = [&algorithm_formatter](
+    if (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)
+        ls_parameters.separator_parameters.number_of_workers = 1;
+    ls_parameters.new_solution_callback = [&algorithm_formatter, engine](
             const irregular::Output& ps_output)
     {
         std::stringstream ss;
-        ss << "LS";
+        ss << ((engine == LocalSearchEngine::LinearProgramming)? "LS-LP": "LS-DT");
+        if (!ps_output.solution_pool.best_label().empty())
+            ss << " " << ps_output.solution_pool.best_label();
         algorithm_formatter.update_solution(ps_output.solution_pool.best(), ss.str());
     };
-    local_search(instance, ls_parameters);
+    std::mt19937_64 generator(parameters.seed);
+    local_search(instance, generator, nullptr, ls_parameters);
+}
+
+void optimize_local_search_linear_programming(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    optimize_local_search(
+            instance,
+            parameters,
+            algorithm_formatter,
+            LocalSearchEngine::LinearProgramming);
+}
+
+void optimize_local_search_direct_trigonometry(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    optimize_local_search(
+            instance,
+            parameters,
+            algorithm_formatter,
+            LocalSearchEngine::DirectTrigonometry);
 }
 
 void optimize_sequential_single_knapsack(
@@ -403,6 +443,7 @@ void optimize_sequential_single_knapsack(
             = [&algorithm_formatter, &parameters, queue_size, maximum_approximation_ratio](const Instance& kp_instance)
             {
                 OptimizeParameters kp_parameters;
+                kp_parameters.seed = parameters.seed;
                 kp_parameters.verbosity_level = 0;
                 kp_parameters.timer = parameters.timer;
                 kp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
@@ -473,6 +514,7 @@ void optimize_sequential_value_correction(
         = [&algorithm_formatter, &parameters](const Instance& kp_instance)
         {
             OptimizeParameters kp_parameters;
+            kp_parameters.seed = parameters.seed;
             kp_parameters.verbosity_level = 0;
             kp_parameters.timer = parameters.timer;
             kp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
@@ -524,6 +566,7 @@ void optimize_dichotomic_search(
             = [&algorithm_formatter, &parameters, queue_size, maximum_approximation_ratio](const Instance& bpp_instance)
             {
                 OptimizeParameters bpp_parameters;
+                bpp_parameters.seed = parameters.seed;
                 bpp_parameters.verbosity_level = 0;
                 bpp_parameters.timer = parameters.timer;
                 bpp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
@@ -584,6 +627,7 @@ void optimize_column_generation(
         = [&algorithm_formatter, &parameters](const Instance& kp_instance, PricingType)
         {
             OptimizeParameters kp_parameters;
+            kp_parameters.seed = parameters.seed;
             kp_parameters.verbosity_level = 0;
             kp_parameters.timer = parameters.timer;
             kp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
@@ -626,6 +670,8 @@ void optimize_tree_search_periodic_packing(
     ts_pp_parameters.optimization_mode = parameters.optimization_mode;
     ts_pp_parameters.not_anytime_tree_search_queue_size
         = parameters.not_anytime_tree_search_periodic_packing_queue_size;
+    ts_pp_parameters.maximum_approximation_ratio
+        = parameters.not_anytime_maximum_approximation_ratio;
     ts_pp_parameters.new_solution_callback = [&algorithm_formatter](
             const packingsolver::Output<Instance, Solution>& ts_output)
     {
@@ -656,10 +702,27 @@ void optimize_milp_raster(
 }
 
 /**
+ * Area of the bin of a single-bin instance which is left for the items to
+ * place: its area minus the areas of its fixed items and of its defects
+ * (approximate if defects overlap each other or go out of the bin).
+ */
+AreaDbl bin_free_area(const Instance& instance)
+{
+    const BinType& bin_type = instance.bin_type(0);
+    AreaDbl free_area = bin_type.space();
+    for (const FixedItem& fixed_item: bin_type.fixed_items)
+        free_area -= instance.item_type(fixed_item.item_type_id).space();
+    for (const Defect& defect: bin_type.defects)
+        free_area -= defect.shape_orig.compute_area();
+    return (std::max)(free_area, 0.0);
+}
+
+/**
  * Estimate the maximum number of items that could fit in the (single) bin
  * of the instance, using only their areas: sort item types by increasing
  * item area and greedily count copies (smallest items first) until their
- * cumulative area reaches the bin's area.
+ * cumulative area reaches the bin's free area (see 'bin_free_area'). Only
+ * the copies which are not fixed are counted.
  */
 ItemPos max_number_of_items_in_bin(const Instance& instance)
 {
@@ -668,11 +731,13 @@ ItemPos max_number_of_items_in_bin(const Instance& instance)
             item_type_id < instance.number_of_item_types();
             ++item_type_id) {
         const ItemType& item_type = instance.item_type(item_type_id);
-        items_by_area.push_back({item_type.space(), item_type.copies});
+        ItemPos copies = item_type.copies - item_type.copies_fixed;
+        if (copies > 0)
+            items_by_area.push_back({item_type.space(), copies});
     }
     std::sort(items_by_area.begin(), items_by_area.end());
 
-    AreaDbl bin_area = instance.bin_type(0).space();
+    AreaDbl bin_area = bin_free_area(instance);
     AreaDbl cumulative_area = 0.0;
     ItemPos number_of_items = 0;
     for (const auto& p: items_by_area) {
@@ -822,7 +887,8 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         = largest_bin_space(instance) / mean_item_space(instance);
     bool use_tree_search = parameters.use_tree_search;
     bool use_tree_search_periodic_packing = parameters.use_tree_search_periodic_packing;
-    bool use_local_search = parameters.use_local_search;
+    bool use_local_search_linear_programming = parameters.use_local_search_linear_programming;
+    bool use_local_search_direct_trigonometry = parameters.use_local_search_direct_trigonometry;
     bool use_sequential_single_knapsack = parameters.use_sequential_single_knapsack;
     bool use_sequential_value_correction = parameters.use_sequential_value_correction;
     bool use_dichotomic_search = parameters.use_dichotomic_search;
@@ -839,29 +905,33 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
             use_milp_raster = false;
         }
         if (instance.objective() == Objective::Knapsack) {
-            use_local_search = false;
+            use_local_search_linear_programming = false;
+            use_local_search_direct_trigonometry = false;
         }
         // Automatic selection.
         if (!use_tree_search
                 && !use_tree_search_periodic_packing
-                && !use_local_search
+                && !use_local_search_linear_programming
+                && !use_local_search_direct_trigonometry
                 && !use_milp_raster) {
             // tree_search_periodic_packing is worth running when the
             // instance is dominated by item types with many copies: either
-            // these alone already exceed the bin's area (so a periodic
+            // these alone already exceed the bin's free area (so a periodic
             // tiling of them is going to be needed regardless of the other
             // item types), or they make up the entire instance (no other
-            // item type contributes any area).
-            AreaDbl bin_area = instance.bin_type(0).space();
+            // item type contributes any area). The fixed items and the
+            // defects are not counted: they leave less area to fill.
+            AreaDbl bin_area = bin_free_area(instance);
             AreaDbl high_copies_area = 0.0;
             AreaDbl total_item_area = 0.0;
             for (ItemTypeId item_type_id = 0;
                     item_type_id < instance.number_of_item_types();
                     ++item_type_id) {
                 const ItemType& item_type = instance.item_type(item_type_id);
-                AreaDbl item_type_area = item_type.copies * item_type.space();
+                ItemPos copies = item_type.copies - item_type.copies_fixed;
+                AreaDbl item_type_area = copies * item_type.space();
                 total_item_area += item_type_area;
-                if (item_type.copies > parameters.periodic_packing_copies_threshold)
+                if (copies > parameters.periodic_packing_copies_threshold)
                     high_copies_area += item_type_area;
             }
             bool periodic_packing_runnable
@@ -873,14 +943,17 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
                 = !periodic_packing_runnable
                 || max_number_of_items_in_bin(instance)
                     < parameters.periodic_packing_max_items_threshold;
+            if (instance.objective() != Objective::Knapsack)
+                use_local_search_direct_trigonometry = true;
         }
     } else if (instance.objective() == Objective::Feasibility) {
         // Disable algorithms which are not available for this objective.
-        use_local_search = false;
+        use_local_search_linear_programming = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
         // Automatic selection.
         if (!use_tree_search
+                && !use_local_search_direct_trigonometry
                 && !use_milp_raster
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
@@ -898,11 +971,13 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
             } else {
                 use_tree_search = true;
                 use_column_generation = true;
+                use_local_search_direct_trigonometry = true;
             }
         }
     } else if (instance.objective() == Objective::Knapsack) {
         // Disable algorithms which are not available for this objective.
-        use_local_search = false;
+        use_local_search_linear_programming = false;
+        use_local_search_direct_trigonometry = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
         // Automatic selection.
@@ -950,6 +1025,8 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         // Automatic selection.
         if (!use_tree_search
                 && !use_tree_search_periodic_packing
+                && !use_local_search_linear_programming
+                && !use_local_search_direct_trigonometry
                 && !use_milp_raster
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
@@ -967,6 +1044,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
                 }
             } else {
                 use_tree_search = true;
+                use_local_search_direct_trigonometry = true;
                 if (mean_number_of_items_in_bins
                         > parameters.many_items_in_bins_threshold) {
                     use_sequential_single_knapsack = true;
@@ -980,7 +1058,8 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     } else if (instance.objective() == Objective::VariableSizedBinPacking) {
         // Disable algorithms which are not available for this objective.
         use_milp_raster = false;
-        use_local_search = false;
+        use_local_search_linear_programming = false;
+        use_local_search_direct_trigonometry = false;
         use_tree_search_periodic_packing = false;
         if (instance.number_of_bin_types() == 1) {
             if (use_dichotomic_search) {
@@ -990,7 +1069,8 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         }
         // Automatic selection.
         if (!use_tree_search
-                && !use_local_search
+                && !use_local_search_linear_programming
+                && !use_local_search_direct_trigonometry
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
                 && !use_dichotomic_search
@@ -1105,13 +1185,26 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
                     *context.second);
         });
     }
-    // Local search.
-    if (use_local_search) {
+    // Local search (linear programming engine).
+    if (use_local_search_linear_programming) {
         exception_ptr_list.push_front(std::exception_ptr());
         std::exception_ptr& exception_ptr = exception_ptr_list.front();
         auto context = task_context();
         tasks.push_back([&exception_ptr, &instance, context]() {
-            wrapper<decltype(&optimize_local_search), optimize_local_search>(
+            wrapper<decltype(&optimize_local_search_linear_programming), optimize_local_search_linear_programming>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Local search (direct trigonometry engine).
+    if (use_local_search_direct_trigonometry) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_local_search_direct_trigonometry), optimize_local_search_direct_trigonometry>(
                     exception_ptr,
                     instance,
                     *context.first,

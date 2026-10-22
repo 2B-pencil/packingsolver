@@ -645,7 +645,8 @@ void bind_irregular(nb::module_& m)
         .def(nb::init<>())
         .def_rw("reduce", &ReductionParameters::reduce)
         .def_rw("remove_negative_profit_items", &ReductionParameters::remove_negative_profit_items)
-        .def_rw("merge_identical_items", &ReductionParameters::merge_identical_items);
+        .def_rw("merge_identical_items", &ReductionParameters::merge_identical_items)
+        .def_rw("remove_dominated_bin_types", &ReductionParameters::remove_dominated_bin_types);
 
     nb::class_<OptimizeParameters> parameters = bind_parameters_base<irregular::Output, OptimizeParameters>(m);
     parameters
@@ -654,7 +655,8 @@ void bind_irregular(nb::module_& m)
         .def_rw("linear_programming_solver_name", &OptimizeParameters::linear_programming_solver_name)
         .def_rw("use_tree_search", &OptimizeParameters::use_tree_search)
         .def_rw("use_tree_search_periodic_packing", &OptimizeParameters::use_tree_search_periodic_packing)
-        .def_rw("use_local_search", &OptimizeParameters::use_local_search)
+        .def_rw("use_local_search_linear_programming", &OptimizeParameters::use_local_search_linear_programming)
+        .def_rw("use_local_search_direct_trigonometry", &OptimizeParameters::use_local_search_direct_trigonometry)
         .def_rw("use_milp_raster", &OptimizeParameters::use_milp_raster)
         .def_rw("use_sequential_single_knapsack", &OptimizeParameters::use_sequential_single_knapsack)
         .def_rw("use_sequential_value_correction", &OptimizeParameters::use_sequential_value_correction)
@@ -675,6 +677,7 @@ void bind_irregular(nb::module_& m)
         .def_rw("not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size", &OptimizeParameters::not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size)
         .def_rw("not_anytime_sequential_value_correction_number_of_iterations", &OptimizeParameters::not_anytime_sequential_value_correction_number_of_iterations)
         .def_rw("not_anytime_local_search_maximum_number_of_iterations_without_improvement", &OptimizeParameters::not_anytime_local_search_maximum_number_of_iterations_without_improvement)
+        .def_rw("not_anytime_local_search_maximum_number_of_failed_separations", &OptimizeParameters::not_anytime_local_search_maximum_number_of_failed_separations)
         .def_rw("not_anytime_dichotomic_search_subproblem_tree_search_queue_size", &OptimizeParameters::not_anytime_dichotomic_search_subproblem_tree_search_queue_size)
         .def_rw("reduction_parameters", &OptimizeParameters::reduction_parameters);
 

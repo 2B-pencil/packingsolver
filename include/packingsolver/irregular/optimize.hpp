@@ -154,6 +154,9 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     /** Optimization mode. */
     OptimizationMode optimization_mode = OptimizationMode::Anytime;
 
+    /** Seed of the random number generators of the randomized algorithms. */
+    Seed seed = 0;
+
     /**
      * Memory limit in mebibytes.
      *
@@ -172,8 +175,17 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     /** Use tree search periodic packing algorithm. */
     bool use_tree_search_periodic_packing = false;
 
-    /** Use local search algorithm. */
-    bool use_local_search = false;
+    /**
+     * Use local search algorithm with the linear programming engine (the
+     * items are shrunk to remove the overlaps).
+     */
+    bool use_local_search_linear_programming = false;
+
+    /**
+     * Use local search algorithm with the direct trigonometry engine (the
+     * overlap between the items is minimized).
+     */
+    bool use_local_search_direct_trigonometry = false;
 
     /** Use MILP raster algorithm. */
     bool use_milp_raster = false;
@@ -254,9 +266,20 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
 
     /**
      * Maximum number of iterations without improvement when the local search
-     * packs an item, after which the item is considered not to fit.
+     * with the linear programming engine packs an item, after which the item
+     * is considered not to fit.
      */
     Counter not_anytime_local_search_maximum_number_of_iterations_without_improvement = 100;
+
+    /**
+     * Maximum number of failed separations of the local search with the
+     * direct trigonometry engine, after which a sub-problem is considered
+     * infeasible.
+     *
+     * In 'Anytime' mode, there is no limit: the local search only stops with
+     * the timer.
+     */
+    Counter not_anytime_local_search_maximum_number_of_failed_separations = 10;
 
     /**
      * Size of the queue in the bin packing subproblem of the dichotomic search
