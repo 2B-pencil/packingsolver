@@ -3,6 +3,8 @@
 #include "packingsolver/irregular/optimize.hpp"
 
 #include "irregular/rotations.hpp"
+#include "irregular/trapezoid_slider.hpp"
+#include "irregular/leftover.hpp"
 #include "shape_simplification.hpp"
 
 #include "shape/trapezoid.hpp"
@@ -11,49 +13,12 @@
 #include "optimizationtools/utils/timer.hpp"
 
 #include <sstream>
+#include <cmath>
 
 namespace packingsolver
 {
 namespace irregular
 {
-
-using ItemShapeTrapezoidPos = int64_t;
-using TrapezoidSetId = int64_t;
-
-struct TrapezoidSet
-{
-    /** Item type. */
-    ItemTypeId item_type_id;
-
-    /** Angle. */
-    Angle angle;
-
-    /** Mirror. */
-    bool mirror;
-
-    /** Shapes. */
-    std::vector<std::vector<GeneralizedTrapezoid>> shapes;
-
-    /** Inflated shapes. */
-    std::vector<std::vector<GeneralizedTrapezoid>> shapes_inflated;
-
-    /** Supporting parts of the trapezoid set. */
-    std::vector<ShapePos> supporting_parts;
-
-    /** Supported parts of the trapezoid set. */
-    std::vector<ShapePos> supported_parts;
-
-    LengthDbl x_min;
-
-    LengthDbl x_max;
-
-    LengthDbl y_min;
-
-    LengthDbl y_max;
-
-    void write_svg(
-            const std::string& file_path) const;
-};
 
 /**
  * Branching scheme class for problem of type "irregular".
@@ -66,19 +31,6 @@ public:
     /*
      * Sub-structures
      */
-
-    enum class Direction
-    {
-        LeftToRightThenBottomToTop,
-        LeftToRightThenTopToBottom,
-        RightToLeftThenBottomToTop,
-        RightToLeftThenTopToBottom,
-        BottomToTopThenLeftToRight,
-        BottomToTopThenRightToLeft,
-        TopToBottomThenLeftToRight,
-        TopToBottomThenRightToLeft,
-        Any,
-    };
 
     /**
      * Structure that stores a point of the skyline.
@@ -123,55 +75,13 @@ public:
         bool operator==(const UncoveredTrapezoid& uncovered_trapezoid) const;
     };
 
-    struct Support
-    {
-        Shape shape;
-
-        TrapezoidSetId trapezoid_set_id = -1;
-        ItemShapePos item_shape_pos = -1;
-        ShapePos hole_pos = -1;
-        BinTypeId bin_type_id = -1;
-        DefectId defect_id = -1;
-
-        AxisAlignedBoundingBox aabb;
-    };
-
-    /**
-     * Bin type structure used in the branching scheme.
-     */
-    struct BranchingSchemeBinType
-    {
-        /** Trapezoids of the defects. */
-        std::vector<UncoveredTrapezoid> defects;
-
-        /**
-         * Indices into supporting_parts for the supports belonging to the bin
-         * itself (floor and defect top surfaces).
-         */
-        std::vector<ShapePos> bin_supporting_part_ids;
-
-        /** Trapezoid sets for items placed in this bin type. */
-        std::vector<TrapezoidSet> trapezoid_sets;
-
-        /** All Support objects for this bin type (bin + item shapes). */
-        std::vector<Support> supporting_parts;
-
-        /** All supported-part Support objects for items in this bin type. */
-        std::vector<Support> supported_parts;
-
-        LengthDbl x_min;
-        LengthDbl x_max;
-        LengthDbl y_min;
-        LengthDbl y_max;
-    };
-
     struct DirectionData
     {
         /** Bin types in each direction. */
-        std::vector<BranchingSchemeBinType> bin_types;
+        std::vector<TrapezoidBinType> bin_types;
     };
 
-    struct Insertion
+    struct Insertion: SlidePosition
     {
         /**
          * - Direction::Any: the item is inserted in the last bin
@@ -195,9 +105,6 @@ public:
         /** Supporting part. */
         ShapePos supporting_part_pos = -1;
 
-        /** Supporting part element. */
-        ElementPos supporting_part_element_pos = -1;
-
         /** x-coordinate of the supporting part. */
         LengthDbl supporting_part_x = 0.0;
 
@@ -206,15 +113,6 @@ public:
 
         /** Supported part. */
         ShapePos supported_part_pos = -1;
-
-        /** Supported part element. */
-        ElementPos supported_part_element_pos = -1;
-
-        /** x-coordinate of the point of interest. */
-        LengthDbl x = 0.0;
-
-        /** y-coordinate of the point of interest. */
-        LengthDbl y = 0.0;
 
         LengthDbl ys = 0.0;
 
@@ -283,6 +181,18 @@ public:
 
         /** Leftover value. */
         Profit leftover_value = 0;
+
+        /** Staircase of the items of the last bin. */
+        Staircase last_bin_staircase;
+
+        /** Staircase leftover value of the last bin. */
+        AreaDbl last_bin_staircase_leftover_value = 0;
+
+        /** Sum of the leftover values of the bins but the last one. */
+        AreaDbl previous_bins_leftover_value = 0;
+
+        /** Sum of the staircase leftover values of the bins but the last one. */
+        AreaDbl previous_bins_staircase_leftover_value = 0;
 
         /** Area used in the guides. */
         AreaDbl guide_area = 0;
@@ -450,6 +360,32 @@ public:
         if (node_1->number_of_bins > node_2->number_of_bins)
             return false;
 
+        // Check leftover values.
+        if (instance().objective() == Objective::BinPackingWithLeftovers) {
+            if (shape::strictly_greater(
+                        std::sqrt(node_2->leftover_value),
+                        std::sqrt(node_1->leftover_value))) {
+                return false;
+            }
+            if (shape::strictly_greater(
+                        std::sqrt(node_2->last_bin_staircase_leftover_value),
+                        std::sqrt(node_1->last_bin_staircase_leftover_value))) {
+                return false;
+            }
+            if (instance().parameters().leftover_all_bins) {
+                if (shape::strictly_greater(
+                            std::sqrt(node_2->previous_bins_leftover_value),
+                            std::sqrt(node_1->previous_bins_leftover_value))) {
+                    return false;
+                }
+                if (shape::strictly_greater(
+                            std::sqrt(node_2->previous_bins_staircase_leftover_value),
+                            std::sqrt(node_1->previous_bins_staircase_leftover_value))) {
+                    return false;
+                }
+            }
+        }
+
         // Check uncovered rectangles.
         ItemPos pos_1 = node_1->uncovered_trapezoids.size() - 1;
         ItemPos pos_2 = node_2->uncovered_trapezoids.size() - 1;
@@ -580,30 +516,6 @@ private:
      * Private methods
      */
 
-    Shape convert_shape(
-            Shape shape,
-            Direction direction) const;
-
-    Shape convert_shape(
-            const Shape& shape,
-            Angle angle,
-            bool mirror) const;
-
-    Shape convert_shape(
-            const Shape& shape,
-            Angle angle,
-            bool mirror,
-            Direction direction) const;
-
-    /** Convert a point from original coordinates to direction coordinates. */
-    Point convert_point(
-            const Point& point,
-            Direction direction) const;
-
-    Point convert_point_back(
-            const Point& point,
-            Direction direction) const;
-
     /** Get the percentage of item inserted into a node. */
     inline double item_percentage(const Node& node) const { return (double)node.number_of_items / instance().number_of_items(); }
 
@@ -634,13 +546,6 @@ private:
     LengthDbl compute_direction(
             const ShapeElement& supporting_element,
             const ShapeElement& supported_element) const;
-
-    bool update_position(
-            Insertion& insertion,
-            const Shape& supporting_shape,
-            const Shape& supported_shape,
-            const GeneralizedTrapezoid& trapezoid_to_avoid,
-            GeneralizedTrapezoid& current_trapezoid) const;
 
     /** Update insertion. */
     void update_insertion(

@@ -16,6 +16,41 @@ namespace packingsolver
 namespace irregular
 {
 
+/**
+ * Update rule of the guided local search weights of the overlap minimization
+ * engines of the local search (direct trigonometry and black-box
+ * optimization), applied after each iteration of a separation.
+ */
+enum class LocalSearchWeightingScheme
+{
+    /**
+     * The weights of the colliding pairs are multiplied by a factor between
+     * 1.2 and 2, proportional to their loss divided by the largest loss; the
+     * other ones are multiplied by 0.95, without going below 1.
+     *
+     * "An open-source heuristic to reboot 2D nesting research" (Gardeyn and
+     * Vanden Berghe, 2025), Algorithm 8.
+     */
+    Multiplicative,
+
+    /**
+     * The weights of the colliding pairs are increased by their loss divided
+     * by the largest loss; the other ones are kept.
+     *
+     * "Solving the irregular strip packing problem via guided local search
+     * for overlap minimization" (Umetani et al., 2009), equation (29).
+     */
+    Additive,
+};
+
+std::istream& operator>>(
+        std::istream& in,
+        LocalSearchWeightingScheme& weighting_scheme);
+
+std::ostream& operator<<(
+        std::ostream& os,
+        LocalSearchWeightingScheme weighting_scheme);
+
 struct Output: packingsolver::Output<Instance, Solution>
 {
     Output(const Instance& instance):
@@ -176,16 +211,36 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     bool use_tree_search_periodic_packing = false;
 
     /**
+     * Use tree search maximal spaces algorithm (only for instances with a
+     * single bin; never selected automatically).
+     */
+    bool use_tree_search_maximal_spaces = false;
+
+    /**
      * Use local search algorithm with the linear programming engine (the
      * items are shrunk to remove the overlaps).
      */
     bool use_local_search_linear_programming = false;
 
     /**
+     * Use local search algorithm with the nonlinear programming engine (the
+     * items are shrunk to remove the overlaps, and may rotate within their
+     * allowed rotation ranges). Requires Knitro.
+     */
+    bool use_local_search_nonlinear_programming = false;
+
+    /**
      * Use local search algorithm with the direct trigonometry engine (the
      * overlap between the items is minimized).
      */
     bool use_local_search_direct_trigonometry = false;
+
+    /**
+     * Use local search algorithm with the black-box optimization engine (the
+     * penetration depths between the items, computed from their no-fit
+     * polygons, are minimized). Requires Knitro.
+     */
+    bool use_local_search_black_box_optimization = false;
 
     /** Use MILP raster algorithm. */
     bool use_milp_raster = false;
@@ -231,6 +286,18 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     std::vector<GuideId> tree_search_guides;
 
     /**
+     * Re-optimize the bins of the best solution at the end, for the
+     * BinPackingWithLeftovers objective in a not-anytime mode.
+     */
+    bool post_process = true;
+
+    /**
+     * The last bin is re-optimized with the tree search in the post-process
+     * only if it contains (strictly) fewer items than this threshold.
+     */
+    ItemPos post_process_last_bin_maximum_number_of_items = 32;
+
+    /**
      * Size of the queue for the pricing knapsack subproblem of the sequential
      * value correction algorithm.
      */
@@ -241,6 +308,40 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
      * generation algorithm.
      */
     NodeId column_generation_subproblem_tree_search_queue_size = 128;
+
+    /*
+     * Parameters for anytime mode
+     */
+
+    /**
+     * Initial size of the queue of the tree search in the single knapsack
+     * subproblem of the sequential single knapsack algorithm.
+     *
+     * At each iteration of the sequential single knapsack algorithm, the
+     * effort of each algorithm of the subproblems is its own initial effort
+     * multiplied by a growth factor, doubled at each iteration. The initial
+     * efforts are chosen such that, in an iteration, the algorithms of a
+     * subproblem take comparable times, so that an algorithm which doesn't
+     * find the best solution of a subproblem doesn't slow down the
+     * iteration.
+     */
+    NodeId anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size = 1;
+
+    /**
+     * Initial size of the queue of the tree search periodic packing in the
+     * single knapsack subproblem of the sequential single knapsack algorithm
+     * (see 'anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size').
+     */
+    NodeId anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_initial_queue_size = 4;
+
+    /**
+     * Initial factor of the maximum number of moves of the local search with
+     * the direct trigonometry engine (see
+     * 'not_anytime_local_search_maximum_number_of_moves_factor') in the
+     * single knapsack subproblem of the sequential single knapsack algorithm
+     * (see 'anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size').
+     */
+    Counter anytime_sequential_single_knapsack_subproblem_local_search_initial_maximum_number_of_moves_factor = 4;
 
     /*
      * Parameters for non-anytime mode
@@ -255,31 +356,58 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     /** Size of the queue in the tree search periodic packing algorithm. */
     NodeId not_anytime_tree_search_periodic_packing_queue_size = 16;
 
+    /** Size of the queue in the tree search maximal spaces algorithm. */
+    NodeId not_anytime_tree_search_maximal_spaces_queue_size = 4;
+
     /**
      * Size of the queue in the single knapsack subproblem of the sequential
      * single knapsack algorithm.
      */
-    NodeId not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size = 512;
+    NodeId not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size = 16;
+
+    /**
+     * Size of the queue of the tree search periodic packing in the single
+     * knapsack subproblem of the sequential single knapsack algorithm.
+     */
+    NodeId not_anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_queue_size = 64;
+
+    /**
+     * Factor of the maximum number of moves of the local search with the
+     * direct trigonometry engine (see
+     * 'not_anytime_local_search_maximum_number_of_moves_factor') in the
+     * single knapsack subproblem of the sequential single knapsack
+     * algorithm.
+     */
+    Counter not_anytime_sequential_single_knapsack_subproblem_local_search_maximum_number_of_moves_factor = 64;
 
     /** Number of iterations of the sequential value correction algorithm. */
     Counter not_anytime_sequential_value_correction_number_of_iterations = 32;
 
     /**
-     * Maximum number of iterations without improvement when the local search
-     * with the linear programming engine packs an item, after which the item
-     * is considered not to fit.
-     */
-    Counter not_anytime_local_search_maximum_number_of_iterations_without_improvement = 100;
-
-    /**
-     * Maximum number of failed separations of the local search with the
-     * direct trigonometry engine, after which a sub-problem is considered
-     * infeasible.
+     * Maximum number of failed separations of the local search, after which
+     * a sub-problem is considered infeasible.
      *
      * In 'Anytime' mode, there is no limit: the local search only stops with
      * the timer.
      */
     Counter not_anytime_local_search_maximum_number_of_failed_separations = 10;
+
+    /**
+     * Weighting scheme of the local search with the direct trigonometry and
+     * black-box optimization engines.
+     */
+    LocalSearchWeightingScheme local_search_weighting_scheme = LocalSearchWeightingScheme::Multiplicative;
+
+    /**
+     * Maximum number of item moves per worker of the local search with the
+     * direct trigonometry engine (see
+     * 'LocalSearchParameters::maximum_number_of_moves'), divided by the
+     * number of items: like the effort of a tree search with a given queue
+     * size, the effort of the local search grows with the number of items.
+     *
+     * In 'Anytime' mode, there is no limit. -1 means no limit.
+     */
+    Counter not_anytime_local_search_maximum_number_of_moves_factor = -1;
 
     /**
      * Size of the queue in the bin packing subproblem of the dichotomic search

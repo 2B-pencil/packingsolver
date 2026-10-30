@@ -2,9 +2,11 @@
 
 #include "packingsolver/irregular/algorithm_formatter.hpp"
 #include "packingsolver/irregular/instance_builder.hpp"
+#include "packingsolver/irregular/post_process.hpp"
 #include "irregular/trivial.hpp"
 #include "irregular/tree_search.hpp"
 #include "irregular/tree_search_periodic_packing.hpp"
+#include "irregular/tree_search_maximal_spaces.hpp"
 #include "irregular/milp_raster.hpp"
 #include "irregular/local_search.hpp"
 #include "algorithms/dichotomic_search.hpp"
@@ -17,6 +19,40 @@
 using namespace packingsolver;
 using namespace packingsolver::irregular;
 using packingsolver::irregular::Output;
+
+std::istream& packingsolver::irregular::operator>>(
+        std::istream& in,
+        LocalSearchWeightingScheme& weighting_scheme)
+{
+    std::string token;
+    in >> token;
+    if (token == "multiplicative"
+            || token == "Multiplicative") {
+        weighting_scheme = LocalSearchWeightingScheme::Multiplicative;
+    } else if (token == "additive"
+            || token == "Additive") {
+        weighting_scheme = LocalSearchWeightingScheme::Additive;
+    } else  {
+        in.setstate(std::ios_base::failbit);
+    }
+    return in;
+}
+
+std::ostream& packingsolver::irregular::operator<<(
+        std::ostream& os,
+        LocalSearchWeightingScheme weighting_scheme)
+{
+    switch (weighting_scheme) {
+    case LocalSearchWeightingScheme::Multiplicative: {
+        os << "Multiplicative";
+        break;
+    } case LocalSearchWeightingScheme::Additive: {
+        os << "Additive";
+        break;
+    }
+    }
+    return os;
+}
 
 namespace
 {
@@ -241,14 +277,6 @@ void optimize_tree_search(
         const OptimizeParameters& parameters,
         AlgorithmFormatter& algorithm_formatter)
 {
-    // Tracks tree_search's own best solution locally (in addition to
-    // reporting it via 'algorithm_formatter' as usual), so
-    // that the last-bin post-process below -- which is specific to
-    // tree_search's own guides -- always has access to it, regardless of
-    // whether other algorithms are running alongside it and regardless of
-    // the deterministic/non-deterministic reporting mode.
-    irregular::Output ts_local_output(instance);
-
     TreeSearchParameters ts_parameters;
     ts_parameters.verbosity_level = 0;
     ts_parameters.timer = parameters.timer;
@@ -260,106 +288,93 @@ void optimize_tree_search(
     ts_parameters.not_anytime_maximum_approximation_ratio = parameters.not_anytime_maximum_approximation_ratio;
     ts_parameters.maximum_approximation_ratio_factor = parameters.maximum_approximation_ratio_factor;
     ts_parameters.json_search_tree_path = parameters.json_search_tree_path;
-    ts_parameters.new_solution_callback = [&algorithm_formatter, &ts_local_output](
+    ts_parameters.new_solution_callback = [&algorithm_formatter](
             const irregular::Output& ts_output)
     {
-        ts_local_output.solution_pool.add(
-                ts_output.solution_pool.best(),
-                ts_output.solution_pool.best_label());
         algorithm_formatter.update_solution(ts_output.solution_pool.best(), "TS " + ts_output.solution_pool.best_label());
     };
     tree_search(instance, ts_parameters);
+}
 
-    // Post-process: for BinPackingWithLeftovers in a not-anytime mode, if
-    // tree_search didn't already use guides {2, 3}, re-optimize just the
-    // last bin (as its own single-bin sub-instance) with guides {2, 3}
-    // forced, in case that guide combination packs it into less leftover
-    // space than the one tree_search used.
-    const Solution& solution_best = ts_local_output.solution_pool.best();
-    if (instance.objective() == Objective::BinPackingWithLeftovers
-            && parameters.optimization_mode != OptimizationMode::Anytime
-            && parameters.tree_search_guides != std::vector<GuideId>({2, 3})
+
+/**
+ * Post-processes for BinPackingWithLeftovers in a not-anytime mode.
+ *
+ * Last bin post-process: re-optimize just the last bin of 'solution_best'
+ * with the tree search with guides {2, 3} (see 'reoptimize_bin'), in case they
+ * pack it into less leftover space: the used area of the last bin doesn't
+ * have to span the whole width or the whole height of the bin, whichever
+ * algorithm found the solution. It is only applied if the last bin contains
+ * fewer items than 'post_process_last_bin_maximum_number_of_items': the tree
+ * search may take much longer than the algorithm which found the solution.
+ *
+ * It is applied to the best solution of each algorithm, not only to the
+ * best solution overall: the re-optimized last bin of a solution which isn't
+ * the best one may make it better than the best one.
+ *
+ * Other bins post-process: the leftover values of the other bins only come
+ * after the ones of the last bin in the objective, so the algorithms hardly
+ * try to keep the free space of the other bins in a single region.
+ * Re-optimize each other bin of the best solution, with the algorithms
+ * selected as for any instance (see 'reoptimize_non_last_bins'). It is only
+ * applied if 'leftover_all_bins' is enabled, since it can only improve the
+ * leftover values of the other bins.
+ */
+bool post_process_applies(
+        const Instance& instance,
+        const OptimizeParameters& parameters)
+{
+    return instance.objective() == Objective::BinPackingWithLeftovers
+        && parameters.optimization_mode != OptimizationMode::Anytime
+        && parameters.post_process;
+}
+
+void optimize_last_bin_post_process(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        const Solution& solution_best,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    if (post_process_applies(instance, parameters)
             && solution_best.number_of_bins() > 0
-            && solution_best.bin(solution_best.number_of_different_bins() - 1).copies == 1) {
-
-        InstanceBuilder last_bin_instance_builder;
-        last_bin_instance_builder.set_objective(Objective::BinPackingWithLeftovers);
-        last_bin_instance_builder.set_parameters(instance.parameters());
-
-        // Add bin types.
-        const SolutionBin& last_bin = solution_best.bin(solution_best.number_of_different_bins() - 1);
-        BinTypeId last_bin_type_id = last_bin_instance_builder.add_bin_type(instance, last_bin.bin_type_id);
-        last_bin_instance_builder.set_bin_type_copies(last_bin_type_id, 1);
-        last_bin_instance_builder.set_bin_type_copies_min(last_bin_type_id, 0);
-
-        // Add item types.
-        std::vector<ItemPos> last_bin_item_copies(instance.number_of_item_types(), 0);
-        for (const SolutionItem& solution_item: last_bin.items)
-            last_bin_item_copies[solution_item.item_type_id]++;
-
-        std::vector<ItemTypeId> last_bin_to_orig;
-        for (ItemTypeId item_type_id = 0;
-                item_type_id < instance.number_of_item_types();
-                ++item_type_id) {
-            if (last_bin_item_copies[item_type_id] > 0) {
-                ItemTypeId sub_item_type_id = last_bin_instance_builder.add_item_type(instance, item_type_id);
-                last_bin_instance_builder.set_item_type_copies(sub_item_type_id, last_bin_item_copies[item_type_id]);
-                last_bin_to_orig.push_back(item_type_id);
-            }
-        }
-
-        // Build instance.
-        Instance last_bin_instance = last_bin_instance_builder.build();
-
-        // Solve instance.
+            && solution_best.bin(solution_best.number_of_different_bins() - 1).copies == 1
+            && (ItemPos)solution_best.bin(solution_best.number_of_different_bins() - 1).items.size()
+            < parameters.post_process_last_bin_maximum_number_of_items) {
+        // Only the tree search is run: the guides {2, 3} are specific to it.
         OptimizeParameters last_bin_parameters;
         last_bin_parameters.seed = parameters.seed;
-        last_bin_parameters.verbosity_level = 0;
         last_bin_parameters.timer = parameters.timer;
         last_bin_parameters.optimization_mode = parameters.optimization_mode;
         last_bin_parameters.not_anytime_maximum_approximation_ratio = parameters.not_anytime_maximum_approximation_ratio;
         last_bin_parameters.not_anytime_tree_search_queue_size = parameters.not_anytime_tree_search_queue_size;
-        last_bin_parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement
-            = parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement;
-        last_bin_parameters.not_anytime_local_search_maximum_number_of_failed_separations
-            = parameters.not_anytime_local_search_maximum_number_of_failed_separations;
         last_bin_parameters.tree_search_guides = {2, 3};
         last_bin_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
-        // Respect the caller's explicit algorithm selection (if any), rather
-        // than always falling back to automatic selection for this
-        // single-bin sub-instance.
-        last_bin_parameters.use_tree_search = parameters.use_tree_search;
-        last_bin_parameters.use_tree_search_periodic_packing = parameters.use_tree_search_periodic_packing;
-        last_bin_parameters.use_local_search_linear_programming = parameters.use_local_search_linear_programming;
-        last_bin_parameters.use_local_search_direct_trigonometry = parameters.use_local_search_direct_trigonometry;
-        last_bin_parameters.use_milp_raster = parameters.use_milp_raster;
-        auto last_bin_output = optimize(last_bin_instance, last_bin_parameters);
-
-        if (last_bin_output.solution_pool.best().feasible()) {
-
-            // Retrieve solution.
-            Solution solution(instance);
-            // Add first bins from current best solution.
-            for (BinPos bin_pos = 0;
-                    bin_pos < solution_best.number_of_different_bins() - 2;
-                    ++bin_pos) {
-                const SolutionBin& solution_bin = solution_best.bin(bin_pos);
-                solution.append_bin(solution_best, bin_pos, solution_bin.copies);
-            }
-            // Add last optimized bin.
-            solution.append_bin(
-                    last_bin_output.solution_pool.best(),
-                    0,
-                    last_bin.copies,
-                    {last_bin.bin_type_id},
-                    last_bin_to_orig);
-
-            // Update best solution.
-            std::stringstream ss;
-            ss << "TS post-process";
-            algorithm_formatter.update_solution(solution, ss.str());
-        }
+        last_bin_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
+        last_bin_parameters.use_tree_search = true;
+        Solution solution = reoptimize_bin(
+                solution_best,
+                solution_best.number_of_different_bins() - 1,
+                last_bin_parameters);
+        algorithm_formatter.update_solution(solution, "post-process");
     }
+}
+
+void optimize_other_bins_post_process(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        const Solution& solution_best,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    if (!post_process_applies(instance, parameters)
+            || !instance.parameters().leftover_all_bins) {
+        return;
+    }
+    OptimizeParameters post_process_parameters = parameters;
+    post_process_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    Solution solution = reoptimize_non_last_bins(
+            solution_best,
+            post_process_parameters);
+    algorithm_formatter.update_solution(solution, "post-process");
 }
 
 void optimize_local_search(
@@ -376,18 +391,37 @@ void optimize_local_search(
     if (parameters.optimization_mode == OptimizationMode::Anytime) {
         ls_parameters.maximum_number_of_failed_separations = -1;
     } else {
-        ls_parameters.maximum_number_of_iterations_without_improvement
-            = parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement;
         ls_parameters.maximum_number_of_failed_separations
             = parameters.not_anytime_local_search_maximum_number_of_failed_separations;
+        if (parameters.not_anytime_local_search_maximum_number_of_moves_factor >= 0) {
+            ls_parameters.maximum_number_of_moves
+                = parameters.not_anytime_local_search_maximum_number_of_moves_factor
+                * instance.number_of_items();
+        }
     }
     if (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)
         ls_parameters.separator_parameters.number_of_workers = 1;
+    ls_parameters.separator_parameters.weighting_scheme = parameters.local_search_weighting_scheme;
+    if (instance.objective() == Objective::Knapsack) {
+        // Each sub-problem of the knapsack local search consists in fitting
+        // a slightly more profitable set of items: short separations, and
+        // therefore more perturbations, work better.
+        ls_parameters.separator_parameters.maximum_number_of_iterations_without_improvement = 2;
+        ls_parameters.separator_parameters.maximum_number_of_strikes = 1;
+        ls_parameters.initial_separation_maximum_number_of_strikes = 1;
+        ls_parameters.black_box_optimization_separator_parameters.maximum_number_of_iterations_without_improvement = 2;
+        ls_parameters.black_box_optimization_separator_parameters.maximum_number_of_strikes = 1;
+    }
+    ls_parameters.black_box_optimization_separator_parameters.weighting_scheme
+        = parameters.local_search_weighting_scheme;
     ls_parameters.new_solution_callback = [&algorithm_formatter, engine](
             const irregular::Output& ps_output)
     {
         std::stringstream ss;
-        ss << ((engine == LocalSearchEngine::LinearProgramming)? "LS-LP": "LS-DT");
+        ss << ((engine == LocalSearchEngine::LinearProgramming)? "LS-LP":
+                (engine == LocalSearchEngine::NonlinearProgramming)? "LS-NLP":
+                (engine == LocalSearchEngine::BlackBoxOptimization)? "LS-BBO":
+                "LS-DT");
         if (!ps_output.solution_pool.best_label().empty())
             ss << " " << ps_output.solution_pool.best_label();
         algorithm_formatter.update_solution(ps_output.solution_pool.best(), ss.str());
@@ -406,6 +440,30 @@ void optimize_local_search_linear_programming(
             parameters,
             algorithm_formatter,
             LocalSearchEngine::LinearProgramming);
+}
+
+void optimize_local_search_nonlinear_programming(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    optimize_local_search(
+            instance,
+            parameters,
+            algorithm_formatter,
+            LocalSearchEngine::NonlinearProgramming);
+}
+
+void optimize_local_search_black_box_optimization(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    optimize_local_search(
+            instance,
+            parameters,
+            algorithm_formatter,
+            LocalSearchEngine::BlackBoxOptimization);
 }
 
 void optimize_local_search_direct_trigonometry(
@@ -427,20 +485,40 @@ void optimize_sequential_single_knapsack(
         Counter queue_size_max)
 {
     double maximum_approximation_ratio = parameters.initial_maximum_approximation_ratio;
-    for (Counter queue_size = 1;;) {
-
+    for (Counter iteration = 0, growth_factor = 1;; ++iteration) {
+        // The effort of each algorithm of the subproblems grows from its own
+        // initial value, see
+        // 'anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size'.
+        NodeId tree_search_queue_size
+            = parameters.anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size
+            * growth_factor;
+        NodeId tree_search_periodic_packing_queue_size
+            = parameters.anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_initial_queue_size
+            * growth_factor;
+        Counter local_search_maximum_number_of_moves_factor
+            = parameters.anytime_sequential_single_knapsack_subproblem_local_search_initial_maximum_number_of_moves_factor
+            * growth_factor;
         if (parameters.optimization_mode != OptimizationMode::Anytime) {
-            queue_size = parameters.not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size;
+            tree_search_queue_size = parameters
+                .not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size;
+            tree_search_periodic_packing_queue_size = parameters
+                .not_anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_queue_size;
+            local_search_maximum_number_of_moves_factor = parameters
+                .not_anytime_sequential_single_knapsack_subproblem_local_search_maximum_number_of_moves_factor;
             maximum_approximation_ratio = parameters.not_anytime_maximum_approximation_ratio;
         }
 
         if (queue_size_max != -1
-                && queue_size > queue_size_max) {
+                && tree_search_queue_size > queue_size_max) {
             break;
         }
 
         SequentialValueCorrectionFunction<Instance, Solution> kp_solve
-            = [&algorithm_formatter, &parameters, queue_size, maximum_approximation_ratio](const Instance& kp_instance)
+            = [&algorithm_formatter, &parameters,
+            tree_search_queue_size,
+            tree_search_periodic_packing_queue_size,
+            local_search_maximum_number_of_moves_factor,
+            maximum_approximation_ratio](const Instance& kp_instance)
             {
                 OptimizeParameters kp_parameters;
                 kp_parameters.seed = parameters.seed;
@@ -452,9 +530,13 @@ void optimize_sequential_single_knapsack(
                     OptimizationMode::NotAnytimeSequential:
                     OptimizationMode::NotAnytimeDeterministic;
                 kp_parameters.not_anytime_maximum_approximation_ratio = maximum_approximation_ratio;
-                kp_parameters.not_anytime_tree_search_queue_size = queue_size;
-                kp_parameters.not_anytime_tree_search_periodic_packing_queue_size = queue_size;
+                kp_parameters.not_anytime_tree_search_queue_size = tree_search_queue_size;
+                kp_parameters.not_anytime_tree_search_periodic_packing_queue_size
+                    = tree_search_periodic_packing_queue_size;
+                kp_parameters.not_anytime_local_search_maximum_number_of_moves_factor
+                    = local_search_maximum_number_of_moves_factor;
                 kp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+                kp_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
                 auto kp_output = optimize(kp_instance, kp_parameters);
                 return kp_output.solution_pool;
             };
@@ -468,13 +550,13 @@ void optimize_sequential_single_knapsack(
         // initial_profit_exponent''s own doc comment.
         svc_parameters.initial_profit_exponent = 1.0;
         svc_parameters.new_solution_callback = [
-            &algorithm_formatter, &queue_size](
+            &algorithm_formatter, iteration](
                     const irregular::Output& ps_output)
             {
                 const SequentialValueCorrectionOutput<Instance, Solution, irregular::Output>& pssvc_output
                     = static_cast<const SequentialValueCorrectionOutput<Instance, Solution, irregular::Output>&>(ps_output);
                 std::stringstream ss;
-                ss << "SSK q " << queue_size;
+                ss << "SSK it " << iteration;
                 algorithm_formatter.update_solution(pssvc_output.solution_pool.best(), ss.str());
             };
         sequential_value_correction<Instance, InstanceBuilder, Solution, AlgorithmFormatter, irregular::Output>(instance, kp_solve, svc_parameters);
@@ -488,10 +570,10 @@ void optimize_sequential_single_knapsack(
         if (parameters.optimization_mode != OptimizationMode::Anytime)
             break;
 
-        // Update beam size.
-        queue_size = std::max(
-                queue_size + 1,
-                (NodeId)(queue_size * 2));
+        // Update growth factor.
+        growth_factor = std::max(
+                growth_factor + 1,
+                (Counter)(growth_factor * 2));
         // Update maximum approximation ratio.
         maximum_approximation_ratio *= parameters.maximum_approximation_ratio_factor;
     }
@@ -526,6 +608,7 @@ void optimize_sequential_value_correction(
             kp_parameters.not_anytime_tree_search_queue_size
                 = parameters.sequential_value_correction_subproblem_tree_search_queue_size;
             kp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+            kp_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
             auto kp_output = optimize(kp_instance, kp_parameters);
             return kp_output.solution_pool;
         };
@@ -577,6 +660,7 @@ void optimize_dichotomic_search(
                 bpp_parameters.not_anytime_maximum_approximation_ratio = maximum_approximation_ratio;
                 bpp_parameters.not_anytime_tree_search_queue_size = queue_size;
                 bpp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+                bpp_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
                 auto bpp_output = optimize(bpp_instance, bpp_parameters);
                 return bpp_output.solution_pool;
             };
@@ -640,6 +724,7 @@ void optimize_column_generation(
             kp_parameters.not_anytime_tree_search_queue_size
                 = parameters.column_generation_subproblem_tree_search_queue_size;
             kp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+            kp_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
             return optimize(kp_instance, kp_parameters);
         };
 
@@ -680,6 +765,30 @@ void optimize_tree_search_periodic_packing(
                 "TSPP " + ts_output.solution_pool.best_label());
     };
     tree_search_periodic_packing(instance, ts_pp_parameters);
+}
+
+void optimize_tree_search_maximal_spaces(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    TreeSearchMaximalSpacesParameters ts_ms_parameters;
+    ts_ms_parameters.verbosity_level = 0;
+    ts_ms_parameters.timer = parameters.timer;
+    ts_ms_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    ts_ms_parameters.optimization_mode = parameters.optimization_mode;
+    ts_ms_parameters.not_anytime_tree_search_queue_size
+        = parameters.not_anytime_tree_search_maximal_spaces_queue_size;
+    ts_ms_parameters.maximum_approximation_ratio
+        = parameters.not_anytime_maximum_approximation_ratio;
+    ts_ms_parameters.new_solution_callback = [&algorithm_formatter](
+            const packingsolver::Output<Instance, Solution>& ts_output)
+    {
+        algorithm_formatter.update_solution(
+                ts_output.solution_pool.best(),
+                "TSMS " + ts_output.solution_pool.best_label());
+    };
+    tree_search_maximal_spaces(instance, ts_ms_parameters);
 }
 
 void optimize_milp_raster(
@@ -887,8 +996,11 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         = largest_bin_space(instance) / mean_item_space(instance);
     bool use_tree_search = parameters.use_tree_search;
     bool use_tree_search_periodic_packing = parameters.use_tree_search_periodic_packing;
+    bool use_tree_search_maximal_spaces = parameters.use_tree_search_maximal_spaces;
     bool use_local_search_linear_programming = parameters.use_local_search_linear_programming;
+    bool use_local_search_nonlinear_programming = parameters.use_local_search_nonlinear_programming;
     bool use_local_search_direct_trigonometry = parameters.use_local_search_direct_trigonometry;
+    bool use_local_search_black_box_optimization = parameters.use_local_search_black_box_optimization;
     bool use_sequential_single_knapsack = parameters.use_sequential_single_knapsack;
     bool use_sequential_value_correction = parameters.use_sequential_value_correction;
     bool use_dichotomic_search = parameters.use_dichotomic_search;
@@ -906,13 +1018,16 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         }
         if (instance.objective() == Objective::Knapsack) {
             use_local_search_linear_programming = false;
-            use_local_search_direct_trigonometry = false;
+            use_local_search_nonlinear_programming = false;
         }
         // Automatic selection.
         if (!use_tree_search
                 && !use_tree_search_periodic_packing
+                && !use_tree_search_maximal_spaces
                 && !use_local_search_linear_programming
+                && !use_local_search_nonlinear_programming
                 && !use_local_search_direct_trigonometry
+                && !use_local_search_black_box_optimization
                 && !use_milp_raster) {
             // tree_search_periodic_packing is worth running when the
             // instance is dominated by item types with many copies: either
@@ -949,11 +1064,13 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     } else if (instance.objective() == Objective::Feasibility) {
         // Disable algorithms which are not available for this objective.
         use_local_search_linear_programming = false;
+        use_local_search_nonlinear_programming = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
         // Automatic selection.
         if (!use_tree_search
                 && !use_local_search_direct_trigonometry
+                && !use_local_search_black_box_optimization
                 && !use_milp_raster
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
@@ -977,7 +1094,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     } else if (instance.objective() == Objective::Knapsack) {
         // Disable algorithms which are not available for this objective.
         use_local_search_linear_programming = false;
-        use_local_search_direct_trigonometry = false;
+        use_local_search_nonlinear_programming = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
         // Automatic selection.
@@ -1026,7 +1143,9 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         if (!use_tree_search
                 && !use_tree_search_periodic_packing
                 && !use_local_search_linear_programming
+                && !use_local_search_nonlinear_programming
                 && !use_local_search_direct_trigonometry
+                && !use_local_search_black_box_optimization
                 && !use_milp_raster
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
@@ -1059,7 +1178,9 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         // Disable algorithms which are not available for this objective.
         use_milp_raster = false;
         use_local_search_linear_programming = false;
+        use_local_search_nonlinear_programming = false;
         use_local_search_direct_trigonometry = false;
+        use_local_search_black_box_optimization = false;
         use_tree_search_periodic_packing = false;
         if (instance.number_of_bin_types() == 1) {
             if (use_dichotomic_search) {
@@ -1070,7 +1191,9 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         // Automatic selection.
         if (!use_tree_search
                 && !use_local_search_linear_programming
+                && !use_local_search_nonlinear_programming
                 && !use_local_search_direct_trigonometry
+                && !use_local_search_black_box_optimization
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
                 && !use_dichotomic_search
@@ -1101,6 +1224,9 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
             }
         }
     }
+    // tree_search_maximal_spaces only supports a single bin.
+    if (instance.number_of_bins() > 1)
+        use_tree_search_maximal_spaces = false;
 
     // Run selected algorithms.
     // In 'NotAnytimeDeterministic' mode, algorithms still run in parallel, but
@@ -1112,7 +1238,8 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     // its own solution is proven optimal against the bounds already known,
     // which only depends on its own progress.
     // These local formatters share 'local_parameters': silenced (no
-    // messages, no JSON output, no new solution callback), and whose timer
+    // messages, no JSON output, and no new solution callback, except the one
+    // forwarding to the shared formatter, see below), and whose timer
     // also stops on the shared formatter's end boolean (e.g. set by the
     // memory monitor), since the algorithms only add the end boolean of the
     // formatter they report to. A 'unique_ptr' is used since an
@@ -1126,15 +1253,31 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     local_parameters.messages_streams.clear();
     local_parameters.write_json_output = false;
     local_parameters.new_solution_callback = [](const Output&) { };
+    // The last bin post-process (see 'optimize_last_bin_post_process') is
+    // applied to the best solution of each algorithm, so in that case too,
+    // each algorithm reports to its own algorithm formatter. Outside of
+    // 'NotAnytimeDeterministic' mode, these local formatters forward every
+    // solution and bound to the shared 'algorithm_formatter' as soon as they
+    // get it, instead of only at the end.
+    bool local = deterministic || post_process_applies(instance, parameters);
+    if (local && !deterministic) {
+        local_parameters.new_solution_callback = [&algorithm_formatter](const Output& local_output)
+        {
+            algorithm_formatter.update_solution(
+                    local_output.solution_pool.best(),
+                    local_output.solution_pool.best_label());
+            algorithm_formatter.update_bounds(local_output);
+        };
+    }
     std::vector<std::unique_ptr<Output>> local_outputs;
     std::vector<std::unique_ptr<AlgorithmFormatter>> local_algorithm_formatters;
     // Return the parameters and the algorithm formatter a new algorithm task
     // should use.
     auto task_context = [&instance, &parameters, &algorithm_formatter, &output,
-         deterministic, &local_parameters, &local_outputs, &local_algorithm_formatters]()
+         local, &local_parameters, &local_outputs, &local_algorithm_formatters]()
         -> std::pair<const OptimizeParameters*, AlgorithmFormatter*>
     {
-        if (!deterministic)
+        if (!local)
             return {&parameters, &algorithm_formatter};
         local_outputs.push_back(std::make_unique<Output>(instance));
         local_outputs.back()->update_bounds(output);
@@ -1153,6 +1296,19 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         auto context = task_context();
         tasks.push_back([&exception_ptr, &instance, context]() {
             wrapper<decltype(&optimize_tree_search), optimize_tree_search>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Tree search maximal spaces.
+    if (use_tree_search_maximal_spaces) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_tree_search_maximal_spaces), optimize_tree_search_maximal_spaces>(
                     exception_ptr,
                     instance,
                     *context.first,
@@ -1192,6 +1348,32 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         auto context = task_context();
         tasks.push_back([&exception_ptr, &instance, context]() {
             wrapper<decltype(&optimize_local_search_linear_programming), optimize_local_search_linear_programming>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Local search (nonlinear programming engine).
+    if (use_local_search_nonlinear_programming) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_local_search_nonlinear_programming), optimize_local_search_nonlinear_programming>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Local search (black-box optimization engine).
+    if (use_local_search_black_box_optimization) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_local_search_black_box_optimization), optimize_local_search_black_box_optimization>(
                     exception_ptr,
                     instance,
                     *context.first,
@@ -1280,6 +1462,39 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
             algorithm_formatter.update_bounds(*local_output);
         }
     }
+
+    // Last bin post-process, on the best solution of each algorithm, and on
+    // the best solution overall if it doesn't come from one of them (e.g.
+    // found before running them). The best solution is copied since the
+    // post-process may replace it.
+    if (post_process_applies(instance, parameters)) {
+        Solution solution_best = output.solution_pool.best();
+        bool solution_best_found_by_an_algorithm = false;
+        for (const auto& local_output: local_outputs) {
+            const Solution& local_solution = local_output->solution_pool.best();
+            if (!(local_solution < solution_best))
+                solution_best_found_by_an_algorithm = true;
+            optimize_last_bin_post_process(
+                    instance,
+                    parameters,
+                    local_solution,
+                    algorithm_formatter);
+        }
+        if (!solution_best_found_by_an_algorithm) {
+            optimize_last_bin_post_process(
+                    instance,
+                    parameters,
+                    solution_best,
+                    algorithm_formatter);
+        }
+    }
+
+    // Other bins post-process, on the best solution overall.
+    optimize_other_bins_post_process(
+            instance,
+            parameters,
+            output.solution_pool.best(),
+            algorithm_formatter);
 
     algorithm_formatter.end();
     return output;

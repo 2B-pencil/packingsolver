@@ -2,6 +2,7 @@
 
 #include "packingsolver/irregular/optimize.hpp"
 #include "irregular/periodic_packing.hpp"
+#include "irregular/empty_spaces.hpp"
 
 #include "optimizationtools/utils/utils.hpp"
 
@@ -18,11 +19,11 @@ namespace irregular
  * Items are positioned relative to the block's bottom-left corner (0, 0)
  * in scaled coordinates. bx and by are the AABB dimensions of the full tiling.
  *
- * Unlike PeriodicItemPacking, this depends on bin dimensions and on the item
- * type's available copies (both of which can differ across sub-instances
- * built from the same source item type), so it is never cached on ItemType
- * and is always recomputed by compute_periodic_blocks_for_item_type /
- * compute_periodic_blocks below.
+ * Unlike PeriodicItemPacking, this depends on bin dimensions and on the
+ * available copies of its item types (both of which can differ across
+ * sub-instances built from the same source instance), so it is never cached
+ * in the instance and is always recomputed by
+ * compute_periodic_blocks_for_item_type / compute_periodic_blocks below.
  */
 struct PeriodicBlock
 {
@@ -68,8 +69,8 @@ struct PeriodicBlock
  * dimensions (block growth stops once a tiling no longer fits the bin) and
  * on the item type's available copies, both of which can differ across
  * sub-instances built from the same source item type; for that reason,
- * unlike periodic_packings, results are never cached on ItemType and are
- * always recomputed by the caller.
+ * unlike periodic packings, results are never cached in the instance and
+ * are always recomputed by the caller.
  */
 std::vector<PeriodicBlock> compute_periodic_blocks_for_item_type(
         const Instance& instance,
@@ -77,38 +78,15 @@ std::vector<PeriodicBlock> compute_periodic_blocks_for_item_type(
         const std::vector<PeriodicItemPacking>& packings,
         const std::vector<ItemTypeRotation>& rotations);
 
+/**
+ * Compute the periodic blocks of all item types (see
+ * compute_periodic_blocks_for_item_type), plus the blocks of the periodic
+ * packings of several item types.
+ */
 std::vector<PeriodicBlock> compute_periodic_blocks(
         const Instance& instance,
         const std::vector<PeriodicItemPacking>& packings,
         const std::vector<std::vector<ItemTypeRotation>>& item_type_rotations);
-
-/**
- * A maximal empty space: the largest axis-aligned rectangle that can be placed
- * at a given position without overlapping any placed block or the bin walls.
- * All lengths are in scaled coordinates.
- */
-struct EmptySpace
-{
-    Point bl_corner = {0.0, 0.0};
-    LengthDbl bx = 0.0;
-    LengthDbl by = 0.0;
-
-    inline LengthDbl xs() const { return bl_corner.x; }
-    inline LengthDbl ys() const { return bl_corner.y; }
-    inline LengthDbl xe() const { return bl_corner.x + bx; }
-    inline LengthDbl ye() const { return bl_corner.y + by; }
-
-    /** Returns true iff this space fully contains other. */
-    inline bool contains(const EmptySpace& other) const
-    {
-        return !strictly_greater(xs(), other.xs())
-            && !strictly_greater(ys(), other.ys())
-            && !strictly_lesser(xe(), other.xe())
-            && !strictly_lesser(ye(), other.ye());
-    }
-
-    inline AreaDbl area() const { return bx * by; }
-};
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -224,9 +202,9 @@ public:
     };
 
     /**
-     * Assembles periodic packings (reading from the ItemType::periodic_packings
-     * cache when available, computing on the fly otherwise) and builds the
-     * blocks internally.
+     * Assembles periodic packings (reading from Instance::periodic_packings()
+     * when available, computing on the fly otherwise) and builds the blocks
+     * internally.
      */
     BranchingSchemePeriodicPacking(
             const Instance& instance,
@@ -391,8 +369,8 @@ private:
      * PeriodicBlock::bx/by (see compute_periodic_blocks_for_item_type /
      * add_aabb_grid_blocks_for_item_type) bakes into every block's own
      * reported footprint, past whichever block ends up last against a wall
-     * in a run -- since cut_spaces() always starts the next leftover space
-     * at exactly bl_corner + bx, only one block in any wall-to-wall run ever
+     * in a run -- since cut_empty_spaces() always starts the next leftover
+     * space at exactly bl_corner + bx, only one block in any wall-to-wall run ever
      * actually needs that margin (the others get it from being followed by
      * another block instead), but no block knows in advance whether it will
      * end up being that one. Growing bin_bx()/by() by the same amount they
@@ -480,22 +458,6 @@ private:
             const Insertion& insertion,
             const SpaceContactInfo& info) const;
 
-    static bool overlaps(
-            const EmptySpace& space,
-            Point bl_corner,
-            LengthDbl bx,
-            LengthDbl by);
-
-    static void add_empty_space(
-            std::vector<EmptySpace>& spaces,
-            const EmptySpace& new_space);
-
-    static void cut_spaces(
-            std::vector<EmptySpace>& spaces,
-            Point bl_corner,
-            LengthDbl bx,
-            LengthDbl by);
-
     /**
      * Remove empty spaces that fit no currently valid block: otherwise
      * find_best_space could pick one of these (e.g. because it is closest to
@@ -555,9 +517,8 @@ struct TreeSearchPeriodicPackingParameters: packingsolver::Parameters<Instance, 
 
 /**
  * Computes everything from scratch: periodic packings (item shapes/rotations
- * only, independent of bin size; read from the ItemType::periodic_packings
- * cache when available), then blocks (bin-size-dependent), then runs the
- * search.
+ * only, independent of bin size; read from Instance::periodic_packings()
+ * when available), then blocks (bin-size-dependent), then runs the search.
  */
 const TreeSearchPeriodicPackingOutput tree_search_periodic_packing(
         const Instance& instance,

@@ -1,11 +1,13 @@
-#include "irregular/local_search_direct_trigonometry/separator.hpp"
+#include "irregular/direct_trigonometry/separator.hpp"
 
 #include "irregular/rotations.hpp"
 #include "irregular/shape_simplification.hpp"
 #include "irregular/solution_builder.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <exception>
 #include <thread>
 
 using namespace packingsolver;
@@ -346,9 +348,9 @@ std::shared_ptr<const Separator::ItemTypes> Separator::build_item_types(
 
     // Item types.
     ItemTypes item_types(instance.number_of_item_types());
-    for (ItemTypeId item_type_id = 0;
-            item_type_id < instance.number_of_item_types();
-            ++item_type_id) {
+    auto build_item_type = [&instance, &simplified_instance, &rotations, &item_types, item_spacing](
+            ItemTypeId item_type_id)
+    {
         const SimplifiedItemType& simplified_item_type = simplified_instance.item_types[item_type_id];
         SeparatorItemType& separator_item_type = item_types[item_type_id];
 
@@ -424,7 +426,40 @@ std::shared_ptr<const Separator::ItemTypes> Separator::build_item_types(
                 separator_item_type.bin_types_orientation_ids[bin_type_id].push_back(orientation_id);
             }
         }
-    }
+    };
+
+    // The item types are independent, and computing their poles is
+    // expensive: they are built in parallel by the workers, each one taking
+    // the next item type not built yet.
+    Counter number_of_threads = (std::max)((Counter)1, (std::min)(
+                parameters.number_of_workers,
+                (Counter)instance.number_of_item_types()));
+    std::atomic<ItemTypeId> next_item_type_id(0);
+    std::vector<std::exception_ptr> exceptions(number_of_threads);
+    auto build_item_types_worker = [&instance, &build_item_type, &next_item_type_id, &exceptions](
+            Counter thread_pos)
+    {
+        try {
+            for (;;) {
+                ItemTypeId item_type_id = next_item_type_id++;
+                if (item_type_id >= instance.number_of_item_types())
+                    break;
+                build_item_type(item_type_id);
+            }
+        } catch (...) {
+            exceptions[thread_pos] = std::current_exception();
+        }
+    };
+    std::vector<std::thread> threads;
+    for (Counter thread_pos = 1; thread_pos < number_of_threads; ++thread_pos)
+        threads.push_back(std::thread(build_item_types_worker, thread_pos));
+    build_item_types_worker(0);
+    for (std::thread& thread: threads)
+        thread.join();
+    for (const std::exception_ptr& exception: exceptions)
+        if (exception)
+            std::rethrow_exception(exception);
+
     return std::make_shared<const ItemTypes>(item_types);
 }
 
@@ -813,14 +848,21 @@ double Separator::total_loss() const
 
 void Separator::update_weights()
 {
-    // Algorithm 8 of the Sparrow paper.
     double maximum_loss = 0.0;
     for (const Entry& entry: pair_entries_)
         maximum_loss = (std::max)(maximum_loss, entry.loss);
     for (const Entry& entry: hazard_entries_)
         maximum_loss = (std::max)(maximum_loss, entry.loss);
-    auto update = [maximum_loss](Entry& entry)
+    const LocalSearchWeightingScheme weighting_scheme = parameters_.weighting_scheme;
+    auto update = [maximum_loss, weighting_scheme](Entry& entry)
     {
+        if (weighting_scheme == LocalSearchWeightingScheme::Additive) {
+            // Equation (29) of Umetani et al. (2009).
+            if (entry.loss > 0.0)
+                entry.weight += entry.loss / maximum_loss;
+            return;
+        }
+        // Algorithm 8 of the Sparrow paper.
         double multiplier = (entry.loss == 0.0)?
             weight_decay:
             weight_minimum_increase_ratio
@@ -1007,7 +1049,8 @@ void Separator::set_solution(
     shift_overflowing_items();
     layout = items_state_;
     set_layout(layout);
-    insert_missing_items(timer);
+    if (!knapsack_)
+        insert_missing_items(timer);
 }
 
 void Separator::shift_overflowing_items()
@@ -1559,6 +1602,20 @@ void Separator::move_items_workers(const optimizationtools::Timer& timer)
     copy_state(*workers_[best_worker_pos]);
 }
 
+bool Separator::separate_initial(const optimizationtools::Timer& timer)
+{
+    SeparatorParameters parameters = parameters_;
+    if (initial_maximum_number_of_iterations_without_improvement_ != -1) {
+        parameters_.maximum_number_of_iterations_without_improvement
+            = initial_maximum_number_of_iterations_without_improvement_;
+    }
+    if (initial_maximum_number_of_strikes_ != -1)
+        parameters_.maximum_number_of_strikes = initial_maximum_number_of_strikes_;
+    bool separated = separate(timer);
+    parameters_ = parameters;
+    return separated;
+}
+
 bool Separator::separate(
         const optimizationtools::Timer& timer,
         double reference_loss)
@@ -1625,6 +1682,7 @@ bool Separator::separate(
                 move_items_workers(timer);
             }
             number_of_iterations_++;
+            count_moves();
             double loss = total_loss();
             if (loss == 0) {
                 return true;
@@ -1648,7 +1706,7 @@ bool Separator::separate(
     return false;
 }
 
-void Separator::disrupt()
+void Separator::swap_large_items()
 {
     std::vector<ItemPos> placed_items;
     for (ItemPos item_pos = 0; item_pos < (ItemPos)items_state_.size(); ++item_pos)
@@ -1770,3 +1828,209 @@ void Separator::disrupt()
     set_layout(layout);
 }
 
+void Separator::disrupt()
+{
+    if (!knapsack_) {
+        swap_large_items();
+        return;
+    }
+
+    std::vector<ItemPos> placed_items;
+    for (ItemPos item_pos = 0; item_pos < (ItemPos)items_state_.size(); ++item_pos)
+        if (items_state_[item_pos].bin_pos != -1)
+            placed_items.push_back(item_pos);
+    Profit current_profit = profit();
+    auto item_profit = [this](ItemPos item_pos)
+    {
+        return instance_.item_type(items_item_type_id_[item_pos]).profit;
+    };
+    // Rebuild the collision tracker after a change of the set of items.
+    auto finish = [this]()
+    {
+        std::vector<ItemState> layout = items_state_;
+        set_layout(layout);
+    };
+
+    enum class Perturbation
+    {
+        Swap,
+        Move,
+        Insertion,
+        Exchange,
+        Removal,
+    };
+    std::uniform_int_distribution<int> perturbation_distribution(0, 4);
+    // A perturbation might not be applicable; another one is then drawn.
+    const Counter maximum_number_of_attempts = 16;
+    for (Counter attempt = 0; attempt < maximum_number_of_attempts; ++attempt) {
+        Perturbation perturbation = (Perturbation)perturbation_distribution(generator_);
+        switch (perturbation) {
+        case Perturbation::Swap: {
+            if (placed_items.size() < 2)
+                break;
+            swap_large_items();
+            return;
+        } case Perturbation::Move: {
+            if (placed_items.empty())
+                break;
+            std::uniform_int_distribution<ItemPos> distribution(0, placed_items.size() - 1);
+            ItemPos item_pos = placed_items[distribution(generator_)];
+            ItemState item_state_old = items_state_[item_pos];
+            remove_item(item_pos);
+            if (!insert_item(item_pos, -1, nullptr))
+                add_item(item_pos, item_state_old);
+            finish();
+            return;
+        } case Perturbation::Insertion: {
+            ItemPos item_pos = draw_missing_item([](ItemPos) { return true; });
+            if (item_pos == -1)
+                break;
+            if (!insert_item(item_pos, -1, nullptr))
+                break;
+            finish();
+            return;
+        } case Perturbation::Exchange: {
+            // Items of the layout which can be exchanged with an item which
+            // isn't in it.
+            auto exchangeable_items = [this, &placed_items, &item_profit, current_profit](
+                    ItemPos item_pos_in)
+            {
+                std::vector<ItemPos> item_positions;
+                for (ItemPos item_pos_out: placed_items) {
+                    if (items_item_type_id_[item_pos_out] == items_item_type_id_[item_pos_in])
+                        continue;
+                    if (strictly_greater(
+                                current_profit - item_profit(item_pos_out) + item_profit(item_pos_in),
+                                profit_threshold_)) {
+                        item_positions.push_back(item_pos_out);
+                    }
+                }
+                return item_positions;
+            };
+            ItemPos item_pos_in = draw_missing_item([&exchangeable_items](ItemPos item_pos)
+                    {
+                        return !exchangeable_items(item_pos).empty();
+                    });
+            if (item_pos_in == -1)
+                break;
+            std::vector<ItemPos> item_positions_out = exchangeable_items(item_pos_in);
+            std::uniform_int_distribution<ItemPos> distribution(0, item_positions_out.size() - 1);
+            ItemPos item_pos_out = item_positions_out[distribution(generator_)];
+            ItemState item_state_out = items_state_[item_pos_out];
+            AxisAlignedBoundingBox aabb_out = item_aabb(item_pos_out, item_state_out);
+            remove_item(item_pos_out);
+            if (!insert_item(item_pos_in, item_state_out.bin_pos, &aabb_out)) {
+                add_item(item_pos_out, item_state_out);
+                break;
+            }
+            finish();
+            return;
+        } case Perturbation::Removal: {
+            std::vector<ItemPos> item_positions;
+            for (ItemPos item_pos: placed_items)
+                if (strictly_greater(current_profit - item_profit(item_pos), profit_threshold_))
+                    item_positions.push_back(item_pos);
+            if (item_positions.empty())
+                break;
+            std::uniform_int_distribution<ItemPos> distribution(0, item_positions.size() - 1);
+            remove_item(item_positions[distribution(generator_)]);
+            finish();
+            return;
+        }
+        }
+    }
+}
+
+Profit Separator::profit() const
+{
+    Profit profit = 0;
+    for (ItemPos item_pos = 0; item_pos < (ItemPos)items_state_.size(); ++item_pos)
+        if (items_state_[item_pos].bin_pos != -1)
+            profit += instance_.item_type(items_item_type_id_[item_pos]).profit;
+    return profit;
+}
+
+ItemPos Separator::draw_missing_item(const std::function<bool(ItemPos)>& filter)
+{
+    std::vector<ItemPos> candidates;
+    for (ItemPos item_pos = 0; item_pos < (ItemPos)items_state_.size(); ++item_pos)
+        if (items_state_[item_pos].bin_pos == -1 && filter(item_pos))
+            candidates.push_back(item_pos);
+    if (candidates.empty())
+        return -1;
+    std::uniform_int_distribution<ItemPos> distribution(0, candidates.size() - 1);
+    ItemPos item_pos_1 = candidates[distribution(generator_)];
+    ItemPos item_pos_2 = candidates[distribution(generator_)];
+    auto profit_per_unit_area = [this](ItemPos item_pos)
+    {
+        const ItemType& item_type = instance_.item_type(items_item_type_id_[item_pos]);
+        return item_type.profit / item_type.space();
+    };
+    return (profit_per_unit_area(item_pos_2) > profit_per_unit_area(item_pos_1))?
+        item_pos_2:
+        item_pos_1;
+}
+
+bool Separator::insert_item(
+        ItemPos item_pos,
+        BinPos around_bin_pos,
+        const AxisAlignedBoundingBox* around_aabb)
+{
+    Candidate candidate;
+    const std::vector<Counter>* orientation_ids = (around_aabb != nullptr)?
+        &orientation_ids_[instance_.bin_type_id(around_bin_pos)][items_item_type_id_[item_pos]]:
+        nullptr;
+    if (around_aabb != nullptr && !orientation_ids->empty()) {
+        // Start with the center of the bounding box of the item at the center
+        // of 'around_aabb', in a random allowed orientation; the search
+        // samples around it and in the whole bins.
+        const SeparatorItemType& item_type = item_types_[items_item_type_id_[item_pos]];
+        std::uniform_int_distribution<Counter> distribution(0, orientation_ids->size() - 1);
+        ItemState item_state;
+        item_state.bin_pos = around_bin_pos;
+        item_state.orientation_id = (*orientation_ids)[distribution(generator_)];
+        const AxisAlignedBoundingBox& aabb = item_type.orientations[item_state.orientation_id].aabb;
+        item_state.position = {
+            (around_aabb->x_min + around_aabb->x_max) / 2 - (aabb.x_min + aabb.x_max) / 2,
+            (around_aabb->y_min + around_aabb->y_max) / 2 - (aabb.y_min + aabb.y_max) / 2};
+        items_state_[item_pos] = item_state;
+        candidate = search_placement(item_pos, false);
+    } else {
+        candidate = search_placement(item_pos, true);
+    }
+    if (candidate.state.bin_pos == -1) {
+        items_state_[item_pos].bin_pos = -1;
+        return false;
+    }
+    add_item(item_pos, candidate.state);
+    return true;
+}
+
+bool Separator::insert_items_above_profit_threshold()
+{
+    std::vector<bool> failed(items_state_.size(), false);
+    while (!strictly_greater(profit(), profit_threshold_)) {
+        ItemPos item_pos = draw_missing_item([&failed](ItemPos item_pos) { return !failed[item_pos]; });
+        if (item_pos == -1)
+            return false;
+        if (!insert_item(item_pos, -1, nullptr))
+            failed[item_pos] = true;
+    }
+    std::vector<ItemState> layout = items_state_;
+    set_layout(layout);
+    return true;
+}
+
+void Separator::count_moves()
+{
+    if (moves_limit_ == nullptr)
+        return;
+    moves_limit_->number_of_moves += number_of_moves_ - number_of_moves_counted_;
+    number_of_moves_counted_ = number_of_moves_;
+    Counter number_of_workers = (std::max)((Counter)1, parameters_.number_of_workers);
+    if (moves_limit_->maximum_number_of_moves >= 0
+            && moves_limit_->number_of_moves
+            >= moves_limit_->maximum_number_of_moves * number_of_workers) {
+        moves_limit_->reached = true;
+    }
+}

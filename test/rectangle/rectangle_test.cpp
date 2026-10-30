@@ -1,5 +1,6 @@
 #include "packingsolver/rectangle/instance_builder.hpp"
 #include "packingsolver/rectangle/optimize.hpp"
+#include "packingsolver/rectangle/post_process.hpp"
 #include "rectangle/solution_builder.hpp"
 
 #include <gtest/gtest.h>
@@ -7,6 +8,42 @@
 
 using namespace packingsolver::rectangle;
 namespace fs = boost::filesystem;
+
+TEST(Rectangle, ReoptimizeNonLastBins)
+{
+    // Two 10 x 10 bins and three 5 x 5 items. In the first bin of the
+    // solution, the two items are in opposite corners: the free space is
+    // split into two regions, and the leftover value of the bin is 0.
+    // Re-optimized, they are next to each other.
+    InstanceBuilder instance_builder;
+    instance_builder.set_objective(packingsolver::Objective::BinPackingWithLeftovers);
+    packingsolver::BinTypeId bin_type_id = instance_builder.add_bin_type(10, 10);
+    instance_builder.set_bin_type_copies(bin_type_id, 2);
+    packingsolver::ItemTypeId item_type_id = instance_builder.add_item_type(5, 5);
+    instance_builder.set_item_type_copies(item_type_id, 3);
+    const Instance instance = instance_builder.build();
+
+    SolutionBuilder solution_builder(instance);
+    solution_builder.add_bin(bin_type_id, 1);
+    solution_builder.add_item(0, item_type_id, {0, 0}, false);
+    solution_builder.add_item(0, item_type_id, {5, 5}, false);
+    solution_builder.add_bin(bin_type_id, 1);
+    solution_builder.add_item(1, item_type_id, {0, 0}, false);
+    const Solution solution = solution_builder.build();
+    ASSERT_TRUE(solution.feasible());
+    EXPECT_EQ(solution.bin(0).leftover_value, 0);
+    EXPECT_EQ(solution.bin(0).staircase_leftover_value, 0);
+
+    OptimizeParameters parameters;
+    parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
+    const Solution new_solution = reoptimize_non_last_bins(solution, parameters);
+    ASSERT_TRUE(new_solution.feasible());
+    EXPECT_EQ(new_solution.number_of_bins(), 2);
+    EXPECT_EQ(new_solution.bin(0).leftover_value, 50);
+    EXPECT_EQ(new_solution.bin(0).staircase_leftover_value, 50);
+    EXPECT_EQ(new_solution.leftover_value(), solution.leftover_value());
+    EXPECT_TRUE(solution < new_solution);
+}
 
 TEST(Rectangle, BinCopies)
 {
@@ -111,6 +148,19 @@ INSTANTIATE_TEST_SUITE_P(
                 fs::path("data") / "rectangle" / "tests" / "bin_packing_large_dimensions" / "bins.csv",
                 fs::path("data") / "rectangle" / "tests" / "bin_packing_large_dimensions" / "parameters.csv",
                 fs::path("data") / "rectangle" / "tests" / "bin_packing_large_dimensions" / "solution.csv",
+            }, {
+                // 'BinPackingWithLeftovers' in a not-anytime mode: the
+                // post-process re-optimizes the last bin with guides
+                // {2, 3}. It used to rebuild the solution from all the bins
+                // but the last two (instead of the last one), so with
+                // several bins the rebuilt solution missed the items of the
+                // second-to-last bin and was never kept. Here, the
+                // re-optimized last bin increases the leftover value from
+                // 4083 to 4240.
+                fs::path("data") / "rectangle" / "tests" / "bin_packing_with_leftovers_last_bin_post_process" / "items.csv",
+                fs::path("data") / "rectangle" / "tests" / "bin_packing_with_leftovers_last_bin_post_process" / "bins.csv",
+                fs::path("data") / "rectangle" / "tests" / "bin_packing_with_leftovers_last_bin_post_process" / "parameters.csv",
+                fs::path("data") / "rectangle" / "tests" / "bin_packing_with_leftovers_last_bin_post_process" / "solution.csv",
             }}));
 
 TEST(Rectangle, ReadUnknownEnumValues)

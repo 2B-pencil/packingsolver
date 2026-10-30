@@ -17,17 +17,18 @@
  *   coordinate descent.
  * - There is no spatial index: an evaluation goes through the items of the
  *   bin, filtered by their bounding boxes.
- * - A single worker moves the items at each iteration.
  */
 
 #pragma once
 
-#include "irregular/local_search_direct_trigonometry/polygon.hpp"
+#include "irregular/direct_trigonometry/polygon.hpp"
 
+#include "packingsolver/irregular/optimize.hpp"
 #include "packingsolver/irregular/solution.hpp"
 
 #include "optimizationtools/utils/timer.hpp"
 
+#include <functional>
 #include <limits>
 #include <memory>
 #include <random>
@@ -82,6 +83,9 @@ struct SeparatorParameters
 
     /** Number of samples in the whole bins, to insert an item. */
     Counter number_of_insertion_samples = 1000;
+
+    /** Weighting scheme of the guided local search weights. */
+    LocalSearchWeightingScheme weighting_scheme = LocalSearchWeightingScheme::Multiplicative;
 };
 
 class Separator
@@ -204,6 +208,25 @@ public:
             double reference_loss = std::numeric_limits<double>::infinity());
 
     /**
+     * Set the stopping criteria of the separation of the initial layout
+     * ('separate_initial'); -1 means the one of the parameters.
+     */
+    void set_initial_stopping_criteria(
+            Counter maximum_number_of_iterations_without_improvement,
+            Counter maximum_number_of_strikes)
+    {
+        initial_maximum_number_of_iterations_without_improvement_
+            = maximum_number_of_iterations_without_improvement;
+        initial_maximum_number_of_strikes_ = maximum_number_of_strikes;
+    }
+
+    /**
+     * Same as 'separate', with the stopping criteria of the separation of the
+     * initial layout.
+     */
+    bool separate_initial(const optimizationtools::Timer& timer);
+
+    /**
      * Set the stopping criteria of the next separations
      * ('SeparatorParameters::maximum_number_of_iterations_without_improvement'
      * and 'SeparatorParameters::maximum_number_of_strikes').
@@ -233,10 +256,90 @@ public:
     Solution solution() const;
 
     /**
-     * Disrupt the current layout by swapping two large items; the items
-     * covered by one of them after the swap are moved to the space it left.
+     * Disrupt the current layout.
+     *
+     * By default, swap two large items; the items covered by one of them
+     * after the swap are moved to the space it left.
+     *
+     * In knapsack mode (see 'set_profit_threshold'), apply a perturbation
+     * drawn at random among the ones which keep the profit of the layout
+     * strictly greater than the threshold:
+     * - the swap of two large items above;
+     * - move: an item is inserted again at the best of sampled positions;
+     * - insertion: an item which is not in the layout is inserted at the
+     *   best of sampled positions;
+     * - exchange: an item of the layout is removed, and an item which is
+     *   not in the layout is inserted around its position;
+     * - removal: an item of the layout is removed.
+     * The items inserted are drawn by binary tournament on their profit per
+     * unit area.
      */
     void disrupt();
+
+    /*
+     * Knapsack mode
+     */
+
+    /**
+     * Switch to knapsack mode and set the profit threshold: the layouts are
+     * meant to contain a set of items whose profit is strictly greater than
+     * it, and the perturbations change the set of items while keeping this
+     * property (see 'disrupt').
+     *
+     * In knapsack mode, 'set_solution' doesn't insert the items missing from
+     * the solution.
+     */
+    void set_profit_threshold(Profit profit_threshold)
+    {
+        knapsack_ = true;
+        profit_threshold_ = profit_threshold;
+    }
+
+    /** Get the profit of the items of the current layout. */
+    Profit profit() const;
+
+    /**
+     * Insert items which are not in the current layout, drawn by binary
+     * tournament on their profit per unit area, each one at the best of
+     * sampled positions, until the profit of the layout is strictly greater
+     * than the threshold.
+     *
+     * Return false if it isn't possible.
+     */
+    bool insert_items_above_profit_threshold();
+
+    /**
+     * Limit on the number of item moves, shared by the separators of a local
+     * search (e.g. the ones of the sub-problems of the sequential
+     * feasibility algorithm).
+     */
+    struct MovesLimit
+    {
+        /**
+         * Maximum number of moves per worker: with several workers, the moves
+         * of all the workers are counted, and the limit is multiplied by the
+         * number of workers.
+         */
+        Counter maximum_number_of_moves = -1;
+
+        /** Number of moves so far. */
+        Counter number_of_moves = 0;
+
+        /**
+         * True iff the limit is reached. It is added as an end boolean to the
+         * timer of the local search, so that the separations, the local
+         * search and the sequential feasibility algorithm stop as at the end
+         * of the time limit.
+         */
+        bool reached = false;
+    };
+
+    /** Set the limit on the number of moves of the separations. */
+    void set_moves_limit(const std::shared_ptr<MovesLimit>& moves_limit)
+    {
+        moves_limit_ = moves_limit;
+        number_of_moves_counted_ = number_of_moves_;
+    }
 
     /** Layout. */
     struct ItemState
@@ -250,6 +353,9 @@ public:
         /** Position of the reference point of the item, in scaled coordinates. */
         Point position = {0.0, 0.0};
     };
+
+    /** Layout: the states of the items. */
+    using Layout = std::vector<ItemState>;
 
     /** Get the layout. */
     std::vector<ItemState> layout() const { return items_state_; }
@@ -502,6 +608,10 @@ private:
     /** Parameters. */
     SeparatorParameters parameters_;
 
+    /** Stopping criteria of the separation of the initial layout. */
+    Counter initial_maximum_number_of_iterations_without_improvement_ = -1;
+    Counter initial_maximum_number_of_strikes_ = -1;
+
     /** Random number generator. */
     std::mt19937_64 generator_;
 
@@ -551,8 +661,45 @@ private:
     /** Number of item moves. */
     Counter number_of_moves_ = 0;
 
+    /** Limit on the number of moves (see 'MovesLimit'). */
+    std::shared_ptr<MovesLimit> moves_limit_;
+
+    /** Number of moves already added to 'moves_limit_'. */
+    Counter number_of_moves_counted_ = 0;
+
+    /** Add the new moves to 'moves_limit_' and check the limit. */
+    void count_moves();
+
     /** Number of iterations of the separations. */
     Counter number_of_iterations_ = 0;
+
+    /** True iff in knapsack mode (see 'set_profit_threshold'). */
+    bool knapsack_ = false;
+
+    /** Profit threshold (see 'set_profit_threshold'). */
+    Profit profit_threshold_ = 0;
+
+    /** Swap two large items (see 'disrupt'). */
+    void swap_large_items();
+
+    /**
+     * Draw an item which is not in the layout by binary tournament on the
+     * profit per unit area, among the ones satisfying 'filter'; return -1 if
+     * there is none.
+     */
+    ItemPos draw_missing_item(const std::function<bool(ItemPos)>& filter);
+
+    /**
+     * Insert an item which is not in the layout at the best of sampled
+     * positions; if 'around_aabb' isn't 'nullptr', the item is first placed
+     * in bin 'around_bin_pos' with the center of its bounding box at the
+     * center of 'around_aabb', and the samples are also drawn around it.
+     * Return false if no position has been found.
+     */
+    bool insert_item(
+            ItemPos item_pos,
+            BinPos around_bin_pos,
+            const AxisAlignedBoundingBox* around_aabb);
 
     /**
      * Workers (copies of the separator), created at the first iteration of a

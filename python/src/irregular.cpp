@@ -263,6 +263,10 @@ void bind_irregular(nb::module_& m)
      * Enums
      */
 
+    nb::enum_<LocalSearchWeightingScheme>(m, "LocalSearchWeightingScheme")
+        .value("Multiplicative", LocalSearchWeightingScheme::Multiplicative)
+        .value("Additive", LocalSearchWeightingScheme::Additive);
+
     nb::enum_<LeftoverMode>(m, "LeftoverMode")
         .value("BottomLeft", LeftoverMode::BottomLeft)
         .value("BottomRight", LeftoverMode::BottomRight)
@@ -281,6 +285,7 @@ void bind_irregular(nb::module_& m)
         .def_ro("quality_rules", &irregular::Parameters::quality_rules)
         .def_ro("item_item_minimum_spacing", &irregular::Parameters::item_item_minimum_spacing)
         .def_ro("leftover_mode", &irregular::Parameters::leftover_mode)
+        .def_ro("leftover_all_bins", &irregular::Parameters::leftover_all_bins)
         .def_ro("scale_value", &irregular::Parameters::scale_value)
         .def_ro("open_dimension_xy_aspect_ratio", &irregular::Parameters::open_dimension_xy_aspect_ratio);
 
@@ -444,6 +449,7 @@ void bind_irregular(nb::module_& m)
         .def("set_open_dimension_xy_aspect_ratio", &InstanceBuilder::set_open_dimension_xy_aspect_ratio,
                 nb::arg("open_dimension_xy_aspect_ratio"))
         .def("set_leftover_mode", &InstanceBuilder::set_leftover_mode, nb::arg("leftover_mode"))
+        .def("set_leftover_all_bins", &InstanceBuilder::set_leftover_all_bins, nb::arg("leftover_all_bins"))
         // Bin types.
         .def("add_bin_type",
                 [](InstanceBuilder& instance_builder,
@@ -655,8 +661,11 @@ void bind_irregular(nb::module_& m)
         .def_rw("linear_programming_solver_name", &OptimizeParameters::linear_programming_solver_name)
         .def_rw("use_tree_search", &OptimizeParameters::use_tree_search)
         .def_rw("use_tree_search_periodic_packing", &OptimizeParameters::use_tree_search_periodic_packing)
+        .def_rw("use_tree_search_maximal_spaces", &OptimizeParameters::use_tree_search_maximal_spaces)
         .def_rw("use_local_search_linear_programming", &OptimizeParameters::use_local_search_linear_programming)
+        .def_rw("use_local_search_nonlinear_programming", &OptimizeParameters::use_local_search_nonlinear_programming)
         .def_rw("use_local_search_direct_trigonometry", &OptimizeParameters::use_local_search_direct_trigonometry)
+        .def_rw("use_local_search_black_box_optimization", &OptimizeParameters::use_local_search_black_box_optimization)
         .def_rw("use_milp_raster", &OptimizeParameters::use_milp_raster)
         .def_rw("use_sequential_single_knapsack", &OptimizeParameters::use_sequential_single_knapsack)
         .def_rw("use_sequential_value_correction", &OptimizeParameters::use_sequential_value_correction)
@@ -674,10 +683,17 @@ void bind_irregular(nb::module_& m)
         .def_rw("not_anytime_maximum_approximation_ratio", &OptimizeParameters::not_anytime_maximum_approximation_ratio)
         .def_rw("not_anytime_tree_search_queue_size", &OptimizeParameters::not_anytime_tree_search_queue_size)
         .def_rw("not_anytime_tree_search_periodic_packing_queue_size", &OptimizeParameters::not_anytime_tree_search_periodic_packing_queue_size)
+        .def_rw("not_anytime_tree_search_maximal_spaces_queue_size", &OptimizeParameters::not_anytime_tree_search_maximal_spaces_queue_size)
         .def_rw("not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size", &OptimizeParameters::not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size)
         .def_rw("not_anytime_sequential_value_correction_number_of_iterations", &OptimizeParameters::not_anytime_sequential_value_correction_number_of_iterations)
-        .def_rw("not_anytime_local_search_maximum_number_of_iterations_without_improvement", &OptimizeParameters::not_anytime_local_search_maximum_number_of_iterations_without_improvement)
         .def_rw("not_anytime_local_search_maximum_number_of_failed_separations", &OptimizeParameters::not_anytime_local_search_maximum_number_of_failed_separations)
+        .def_rw("local_search_weighting_scheme", &OptimizeParameters::local_search_weighting_scheme)
+        .def_rw("not_anytime_local_search_maximum_number_of_moves_factor", &OptimizeParameters::not_anytime_local_search_maximum_number_of_moves_factor)
+        .def_rw("anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size", &OptimizeParameters::anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size)
+        .def_rw("anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_initial_queue_size", &OptimizeParameters::anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_initial_queue_size)
+        .def_rw("anytime_sequential_single_knapsack_subproblem_local_search_initial_maximum_number_of_moves_factor", &OptimizeParameters::anytime_sequential_single_knapsack_subproblem_local_search_initial_maximum_number_of_moves_factor)
+        .def_rw("not_anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_queue_size", &OptimizeParameters::not_anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_queue_size)
+        .def_rw("not_anytime_sequential_single_knapsack_subproblem_local_search_maximum_number_of_moves_factor", &OptimizeParameters::not_anytime_sequential_single_knapsack_subproblem_local_search_maximum_number_of_moves_factor)
         .def_rw("not_anytime_dichotomic_search_subproblem_tree_search_queue_size", &OptimizeParameters::not_anytime_dichotomic_search_subproblem_tree_search_queue_size)
         .def_rw("reduction_parameters", &OptimizeParameters::reduction_parameters);
 

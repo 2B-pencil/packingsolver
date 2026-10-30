@@ -1,7 +1,9 @@
 #define PACKINGSOLVER_PERIODIC_PACKING_TEST_ENABLE_DEBUG
 
+#include "packingsolver/irregular/optimize.hpp"
 #include "irregular/periodic_packing.hpp"
 #include "irregular/rotations.hpp"
+#include "irregular/tree_search_periodic_packing.hpp"
 
 #include "packingsolver/irregular/instance_builder.hpp"
 
@@ -13,6 +15,8 @@
 #endif
 
 #include <gtest/gtest.h>
+
+#include <map>
 
 using namespace packingsolver;
 using namespace packingsolver::irregular;
@@ -484,4 +488,568 @@ TEST(ComputePeriodicPackingsInstanceTest, AabbScaledMatchesPlacedItems)
         EXPECT_TRUE(shape::equal(expected_aabb.y_min, packing.aabb_scaled.y_min));
         EXPECT_TRUE(shape::equal(expected_aabb.y_max, packing.aabb_scaled.y_max));
     }
+}
+
+// The periodic packings computed by InstanceBuilder::build() are stored in
+// the instance, and carried over, with their item type ids remapped, to the
+// sub-instances built with InstanceBuilder::add_item_type(instance, id),
+// instead of being recomputed.
+TEST(ComputePeriodicPackingsInstanceTest, PeriodicPackingsCarriedOverToSubInstances)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.add_bin_type(shape::build_rectangle(2000, 2000));
+    // Below the copies threshold: no periodic packing.
+    ItemTypeId item_type_id_0 = instance_builder.add_item_type(
+            {{shape::build_rectangle(100, 50)}});
+    instance_builder.set_item_type_copies(item_type_id_0, 2);
+    ItemTypeId item_type_id_1 = instance_builder.add_item_type(
+            {{shape::build_shape({{0, 20}, {20, 0}, {207, 0}, {0, 205}})}});
+    instance_builder.add_item_type_allowed_rotation(item_type_id_1, 0.0, 0.0, false);
+    instance_builder.add_item_type_allowed_rotation(item_type_id_1, 180.0, 180.0, false);
+    instance_builder.set_item_type_copies(item_type_id_1, 20);
+    Instance instance = instance_builder.build();
+
+    ASSERT_FALSE(instance.periodic_packings().empty());
+    for (const PeriodicItemPacking& packing: instance.periodic_packings())
+        for (const SolutionItem& item: packing.items)
+            EXPECT_EQ(item.item_type_id, item_type_id_1);
+    EXPECT_TRUE(instance.item_type(item_type_id_0).periodic_packings_computed);
+    EXPECT_TRUE(instance.item_type(item_type_id_1).periodic_packings_computed);
+
+    // Sub-instance with the item types in the reverse order.
+    InstanceBuilder sub_instance_builder;
+    sub_instance_builder.add_bin_type(shape::build_rectangle(2000, 2000));
+    ItemTypeId sub_item_type_id_1 = sub_instance_builder.add_item_type(instance, item_type_id_1);
+    sub_instance_builder.add_item_type(instance, item_type_id_0);
+    Instance sub_instance = sub_instance_builder.build();
+
+    ASSERT_EQ(sub_instance.periodic_packings().size(), instance.periodic_packings().size());
+    for (std::size_t packing_pos = 0;
+            packing_pos < sub_instance.periodic_packings().size();
+            ++packing_pos) {
+        const PeriodicItemPacking& packing = instance.periodic_packings()[packing_pos];
+        const PeriodicItemPacking& sub_packing = sub_instance.periodic_packings()[packing_pos];
+        ASSERT_EQ(sub_packing.items.size(), packing.items.size());
+        for (std::size_t item_pos = 0; item_pos < packing.items.size(); ++item_pos) {
+            EXPECT_EQ(sub_packing.items[item_pos].item_type_id, sub_item_type_id_1);
+            EXPECT_EQ(sub_packing.items[item_pos].angle, packing.items[item_pos].angle);
+            EXPECT_EQ(sub_packing.items[item_pos].mirror, packing.items[item_pos].mirror);
+            EXPECT_TRUE(shape::equal(sub_packing.items[item_pos].bl_corner.x, packing.items[item_pos].bl_corner.x));
+            EXPECT_TRUE(shape::equal(sub_packing.items[item_pos].bl_corner.y, packing.items[item_pos].bl_corner.y));
+        }
+        EXPECT_TRUE(shape::equal(sub_packing.vector_1.x, packing.vector_1.x));
+        EXPECT_TRUE(shape::equal(sub_packing.vector_1.y, packing.vector_1.y));
+        EXPECT_TRUE(shape::equal(sub_packing.vector_2.x, packing.vector_2.x));
+        EXPECT_TRUE(shape::equal(sub_packing.vector_2.y, packing.vector_2.y));
+    }
+
+    // Sub-instance without that item type: no periodic packing.
+    InstanceBuilder sub_instance_builder_2;
+    sub_instance_builder_2.add_bin_type(shape::build_rectangle(2000, 2000));
+    sub_instance_builder_2.add_item_type(instance, item_type_id_0);
+    Instance sub_instance_2 = sub_instance_builder_2.build();
+    EXPECT_TRUE(sub_instance_2.periodic_packings().empty());
+}
+
+struct ComputeLargestEmptySideRectangleTestParams
+{
+    std::string name;
+
+    Shape shape;
+
+    BoundingBoxSide side;
+
+    /** Expected rectangle; empty if no rectangle is expected. */
+    AxisAlignedBoundingBox expected_rectangle;
+
+    /**
+     * If true, only check that the rectangle is non-empty and empty of the
+     * shape, not its exact position (circular arcs are approximated).
+     */
+    bool approximate = false;
+
+    friend std::ostream& operator<<(
+            std::ostream& os,
+            const ComputeLargestEmptySideRectangleTestParams& params)
+    {
+        return os << params.name;
+    }
+};
+
+class ComputeLargestEmptySideRectangleTest: public testing::TestWithParam<ComputeLargestEmptySideRectangleTestParams> { };
+
+TEST_P(ComputeLargestEmptySideRectangleTest, ComputeLargestEmptySideRectangle)
+{
+    ComputeLargestEmptySideRectangleTestParams params = GetParam();
+    ShapeWithHoles shape_with_holes;
+    shape_with_holes.shape = params.shape;
+    AxisAlignedBoundingBox rectangle = compute_largest_empty_side_rectangle(
+            shape_with_holes, params.side, 1.0);
+    std::cout << "rectangle " << rectangle.x_min << " " << rectangle.x_max
+        << " " << rectangle.y_min << " " << rectangle.y_max << std::endl;
+
+    bool expected_empty = params.expected_rectangle.x_min > params.expected_rectangle.x_max;
+    if (expected_empty) {
+        EXPECT_GT(rectangle.x_min, rectangle.x_max);
+        return;
+    }
+    ASSERT_LT(rectangle.x_min, rectangle.x_max);
+    ASSERT_LT(rectangle.y_min, rectangle.y_max);
+    // The rectangle is empty of the shape.
+    EXPECT_FALSE(shape::intersect(params.shape, shape::build_rectangle(rectangle), true));
+    if (params.approximate) {
+        EXPECT_FALSE(shape::strictly_lesser(rectangle.x_min, params.expected_rectangle.x_min));
+        EXPECT_FALSE(shape::strictly_greater(rectangle.x_max, params.expected_rectangle.x_max));
+        EXPECT_FALSE(shape::strictly_lesser(rectangle.y_min, params.expected_rectangle.y_min));
+        EXPECT_FALSE(shape::strictly_greater(rectangle.y_max, params.expected_rectangle.y_max));
+    } else {
+        EXPECT_TRUE(shape::equal(rectangle.x_min, params.expected_rectangle.x_min));
+        EXPECT_TRUE(shape::equal(rectangle.x_max, params.expected_rectangle.x_max));
+        EXPECT_TRUE(shape::equal(rectangle.y_min, params.expected_rectangle.y_min));
+        EXPECT_TRUE(shape::equal(rectangle.y_max, params.expected_rectangle.y_max));
+    }
+}
+
+namespace
+{
+
+// L-shape with arms of width 50 along the bottom and the left sides.
+Shape l_shape()
+{
+    return shape::build_shape({{0, 0}, {700, 0}, {700, 50}, {50, 50}, {50, 550}, {0, 550}});
+}
+
+// U-shape with arms of width 50, opening upwards.
+Shape u_shape()
+{
+    return shape::build_shape({{0, 0}, {300, 0}, {300, 200}, {250, 200}, {250, 50}, {50, 50}, {50, 200}, {0, 200}});
+}
+
+// Square with a quarter disk of radius 50 removed at its top-right corner.
+Shape notched_square()
+{
+    return shape::build_shape({{0, 0}, {100, 0}, {100, 50}, {100, 100, -1}, {50, 100}, {0, 100}});
+}
+
+AxisAlignedBoundingBox no_rectangle()
+{
+    return AxisAlignedBoundingBox();
+}
+
+}
+
+INSTANTIATE_TEST_SUITE_P(
+        Irregular,
+        ComputeLargestEmptySideRectangleTest,
+        testing::ValuesIn(std::vector<ComputeLargestEmptySideRectangleTestParams>{
+            {"LShapeTop", l_shape(), BoundingBoxSide::Top, {50, 700, 50, 550}},
+            {"LShapeRight", l_shape(), BoundingBoxSide::Right, {50, 700, 50, 550}},
+            {"LShapeBottom", l_shape(), BoundingBoxSide::Bottom, no_rectangle()},
+            {"LShapeLeft", l_shape(), BoundingBoxSide::Left, no_rectangle()},
+            {"UShapeTop", u_shape(), BoundingBoxSide::Top, {50, 250, 50, 200}},
+            {"UShapeBottom", u_shape(), BoundingBoxSide::Bottom, no_rectangle()},
+            {"UShapeLeft", u_shape(), BoundingBoxSide::Left, no_rectangle()},
+            {"UShapeRight", u_shape(), BoundingBoxSide::Right, no_rectangle()},
+            {"RectangleTop", shape::build_rectangle(300, 200), BoundingBoxSide::Top, no_rectangle()},
+            {"RectangleLeft", shape::build_rectangle(300, 200), BoundingBoxSide::Left, no_rectangle()},
+            {"TriangleTop", shape::build_shape({{0, 0}, {100, 0}, {0, 100}}), BoundingBoxSide::Top, no_rectangle()},
+            {"NotchedSquareTop", notched_square(), BoundingBoxSide::Top, {50, 100, 50, 100}, true},
+            {"NotchedSquareRight", notched_square(), BoundingBoxSide::Right, {50, 100, 50, 100}, true},
+            {"NotchedSquareBottom", notched_square(), BoundingBoxSide::Bottom, no_rectangle()},
+        }),
+        testing::PrintToStringParamName());
+
+namespace
+{
+
+/**
+ * Check that no two items of a 3 x 3 tiling of a periodic packing are closer
+ * than the item-item minimum spacing.
+ */
+void expect_no_overlap_in_tiling(
+        const Instance& instance,
+        const PeriodicItemPacking& packing)
+{
+    std::vector<ShapeWithHoles> tiling;
+    for (int n = -1; n <= 1; ++n) {
+        for (int m = -1; m <= 1; ++m) {
+            for (const SolutionItem& item: packing.items) {
+                ShapeWithHoles item_shape = instance.item_shape_scaled(
+                        item.item_type_id, 0, item.angle, item.mirror);
+                item_shape.shift(
+                        item.bl_corner.x + n * packing.vector_1.x + m * packing.vector_2.x,
+                        item.bl_corner.y + n * packing.vector_1.y + m * packing.vector_2.y);
+                tiling.push_back(item_shape);
+            }
+        }
+    }
+    LengthDbl spacing_scaled = instance.item_spacing_scaled();
+    std::vector<ShapeWithHoles> inflated_tiling;
+    std::vector<AxisAlignedBoundingBox> aabbs;
+    for (const ShapeWithHoles& item_shape: tiling) {
+        inflated_tiling.push_back(shape::inflate(item_shape, spacing_scaled / 2 * 0.999));
+        aabbs.push_back(inflated_tiling.back().compute_min_max());
+    }
+    for (std::size_t pos_1 = 0; pos_1 < tiling.size(); ++pos_1) {
+        for (std::size_t pos_2 = pos_1 + 1; pos_2 < tiling.size(); ++pos_2) {
+            if (aabbs[pos_1].x_max <= aabbs[pos_2].x_min
+                    || aabbs[pos_2].x_max <= aabbs[pos_1].x_min
+                    || aabbs[pos_1].y_max <= aabbs[pos_2].y_min
+                    || aabbs[pos_2].y_max <= aabbs[pos_1].y_min) {
+                continue;
+            }
+            EXPECT_FALSE(shape::intersect(inflated_tiling[pos_1], inflated_tiling[pos_2], true));
+        }
+    }
+}
+
+double periodic_packing_density(
+        const Instance& instance,
+        const PeriodicItemPacking& packing)
+{
+    AreaDbl item_area = 0.0;
+    for (const SolutionItem& item: packing.items)
+        item_area += instance.item_type(item.item_type_id).area_scaled;
+    return item_area / std::abs(
+            packing.vector_1.x * packing.vector_2.y
+            - packing.vector_1.y * packing.vector_2.x);
+}
+
+}
+
+// Two L-shapes wrap around a square: InstanceBuilder::build() generates
+// periodic packings of the two item types, made of a square and two
+// L-shapes in rotations r and r + 180, without overlap.
+TEST(ComputeWrappingPeriodicPackingsTest, LShapesAroundSquare)
+{
+    LengthDbl spacing = 10;
+    InstanceBuilder instance_builder;
+    instance_builder.add_bin_type(shape::build_rectangle(3000, 1500));
+    instance_builder.set_item_item_minimum_spacing(spacing);
+    ItemTypeId l_shape_id = instance_builder.add_item_type(
+            {{shape::build_shape({{0, 0}, {700, 0}, {700, 50}, {50, 50}, {50, 550}, {0, 550}})}});
+    instance_builder.add_item_type_allowed_rotation(l_shape_id, 0.0, 0.0, false);
+    instance_builder.add_item_type_allowed_rotation(l_shape_id, 180.0, 180.0, false);
+    instance_builder.set_item_type_copies(l_shape_id, 20);
+    ItemTypeId square_id = instance_builder.add_item_type(
+            {{shape::build_rectangle(400, 400)}});
+    instance_builder.set_item_type_copies(square_id, 20);
+    Instance instance = instance_builder.build();
+
+    std::vector<PeriodicItemPacking> wrapping_packings;
+    for (const PeriodicItemPacking& packing: instance.periodic_packings())
+        if (!periodic_packing_has_single_item_type(packing))
+            wrapping_packings.push_back(packing);
+    ASSERT_FALSE(wrapping_packings.empty());
+
+    double best_density = 0.0;
+    for (const PeriodicItemPacking& packing: wrapping_packings) {
+        ASSERT_EQ(packing.items.size(), 3);
+        ItemPos number_of_l_shapes = 0;
+        ItemPos number_of_squares = 0;
+        for (const SolutionItem& item: packing.items) {
+            if (item.item_type_id == l_shape_id)
+                number_of_l_shapes++;
+            if (item.item_type_id == square_id)
+                number_of_squares++;
+        }
+        EXPECT_EQ(number_of_l_shapes, 2);
+        EXPECT_EQ(number_of_squares, 1);
+        expect_no_overlap_in_tiling(instance, packing);
+        best_density = (std::max)(best_density, periodic_packing_density(instance, packing));
+    }
+    std::cout << "best density " << best_density << std::endl;
+    EXPECT_GT(best_density, 0.5);
+}
+
+
+// alma_02 (fontanf/packingsolver data/irregular/alma2025): two L-shapes
+// wrap around the interlocked pair of the other item type (two copies in
+// rotations r and r + 180). The best periodic packing of a cell of the pair
+// and two L-shapes has a density of about 0.705, and the two L-shapes form
+// an exact 760 x 550 rectangle: neither of them sticks out of the other one.
+TEST(ComputeWrappingPeriodicPackingsTest, LShapesAroundPairs)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/wrapping_l_shapes_around_pairs.json");
+    Instance instance = instance_builder.build();
+
+    const PeriodicItemPacking* best_packing = nullptr;
+    double best_density = 0.0;
+    for (const PeriodicItemPacking& packing: instance.periodic_packings()) {
+        if (periodic_packing_has_single_item_type(packing))
+            continue;
+        ItemPos number_of_l_shapes = 0;
+        for (const SolutionItem& item: packing.items)
+            if (item.item_type_id == 0)
+                number_of_l_shapes++;
+        EXPECT_EQ(number_of_l_shapes, 2);
+        double density = periodic_packing_density(instance, packing);
+        if (best_packing == nullptr
+                || shape::strictly_greater(density, best_density)
+                || (shape::equal(density, best_density)
+                    && shape::strictly_lesser(
+                        (packing.aabb_scaled.x_max - packing.aabb_scaled.x_min)
+                        * (packing.aabb_scaled.y_max - packing.aabb_scaled.y_min),
+                        (best_packing->aabb_scaled.x_max - best_packing->aabb_scaled.x_min)
+                        * (best_packing->aabb_scaled.y_max - best_packing->aabb_scaled.y_min)))) {
+            best_density = density;
+            best_packing = &packing;
+        }
+    }
+    ASSERT_NE(best_packing, nullptr);
+    std::cout << "best density " << best_density << std::endl;
+    EXPECT_EQ(best_packing->items.size(), 4);
+    EXPECT_GT(best_density, 0.70);
+    double scale_value = instance.parameters().scale_value;
+    EXPECT_NEAR((best_packing->aabb_scaled.x_max - best_packing->aabb_scaled.x_min) / scale_value, 760, 1e-3);
+    EXPECT_NEAR((best_packing->aabb_scaled.y_max - best_packing->aabb_scaled.y_min) / scale_value, 550, 1e-3);
+    expect_no_overlap_in_tiling(instance, *best_packing);
+}
+
+// The items of the periodic blocks are inside the blocks, including for the
+// periodic packings of compute_wrapping_periodic_packings, whose unit cell
+// doesn't start at (0, 0).
+TEST(ComputeWrappingPeriodicPackingsTest, BlockItemsInsideBlocks)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/wrapping_l_shapes_around_pairs.json");
+    Instance instance = instance_builder.build();
+    auto all_item_type_rotations = compute_item_type_rotations(instance);
+    std::vector<PeriodicBlock> blocks = compute_periodic_blocks(
+            instance,
+            instance.periodic_packings(),
+            all_item_type_rotations[instance.bin_type_id(0)]);
+
+    ItemPos number_of_wrapping_blocks = 0;
+    for (const PeriodicBlock& block: blocks) {
+        if (block.item_copies.size() > 1)
+            number_of_wrapping_blocks++;
+        for (const SolutionItem& item: block.items) {
+            ShapeWithHoles item_shape = instance.item_shape_scaled(
+                    item.item_type_id, 0, item.angle, item.mirror);
+            AxisAlignedBoundingBox aabb = item_shape.compute_min_max();
+            aabb.shift(item.bl_corner);
+            EXPECT_FALSE(shape::strictly_lesser(aabb.x_min, 0.0));
+            EXPECT_FALSE(shape::strictly_lesser(aabb.y_min, 0.0));
+            EXPECT_FALSE(shape::strictly_greater(aabb.x_max, block.bx));
+            EXPECT_FALSE(shape::strictly_greater(aabb.y_max, block.by));
+        }
+    }
+    EXPECT_GT(number_of_wrapping_blocks, 0);
+}
+
+// The items of the periodic packings of compute_wrapping_periodic_packings
+// keep the rotations as given in the allowed rotations of their item types:
+// allowed rotations given with negative angles used to be normalized to
+// [0, 360), giving rotations which are not allowed.
+TEST(ComputeWrappingPeriodicPackingsTest, AllowedRotationsWithNegativeAngles)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.add_bin_type(shape::build_rectangle(3000, 1500));
+    instance_builder.set_item_item_minimum_spacing(10);
+    ItemTypeId l_shape_id = instance_builder.add_item_type(
+            {{shape::build_shape({{0, 0}, {700, 0}, {700, 50}, {50, 50}, {50, 550}, {0, 550}})}});
+    instance_builder.add_item_type_allowed_rotation(l_shape_id, -90.0, -90.0, false);
+    instance_builder.add_item_type_allowed_rotation(l_shape_id, 90.0, 90.0, false);
+    instance_builder.set_item_type_copies(l_shape_id, 20);
+    ItemTypeId square_id = instance_builder.add_item_type(
+            {{shape::build_rectangle(400, 400)}});
+    instance_builder.set_item_type_copies(square_id, 20);
+    Instance instance = instance_builder.build();
+
+    ItemPos number_of_wrapping_packings = 0;
+    for (const PeriodicItemPacking& packing: instance.periodic_packings()) {
+        if (!periodic_packing_has_single_item_type(packing))
+            number_of_wrapping_packings++;
+        for (const SolutionItem& item: packing.items) {
+            EXPECT_TRUE(instance.item_type(item.item_type_id).is_rotation_allowed(item.angle, item.mirror))
+                << "item type " << item.item_type_id << " angle " << item.angle << " mirror " << item.mirror;
+        }
+    }
+    EXPECT_GT(number_of_wrapping_packings, 0);
+}
+
+// alma_02 (fontanf/packingsolver data/irregular/alma2025), item type 4: its
+// periodic packings have a vector_2 which is not perpendicular to vector_1.
+// The blocks are built from the periodic packings clipped to the bin (see
+// 'add_clipped_lattice_blocks'), so they contain partial unit cells: the
+// items of the blocks must still be inside the blocks, and must not be
+// closer than the item-item minimum spacing.
+TEST(ComputePeriodicBlocksTest, ClippedLatticeBlocks)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/periodic_blocks_lowered_items.json");
+    Instance instance = instance_builder.build();
+    auto all_item_type_rotations = compute_item_type_rotations(instance);
+    std::vector<PeriodicBlock> blocks = compute_periodic_blocks(
+            instance,
+            instance.periodic_packings(),
+            all_item_type_rotations[instance.bin_type_id(0)]);
+    ASSERT_FALSE(blocks.empty());
+
+    // Largest block of each periodic packing.
+    std::map<int, const PeriodicBlock*> largest_blocks;
+    for (const PeriodicBlock& block: blocks) {
+        if (block.packing_id < 0)
+            continue;
+        auto it = largest_blocks.find(block.packing_id);
+        if (it == largest_blocks.end() || block.number_of_items > it->second->number_of_items)
+            largest_blocks[block.packing_id] = &block;
+    }
+    ASSERT_FALSE(largest_blocks.empty());
+
+    // The largest blocks of some periodic packings only, to keep the test
+    // fast.
+    const int maximum_number_of_checked_blocks = 8;
+    int number_of_checked_blocks = 0;
+    LengthDbl spacing_scaled = instance.item_spacing_scaled();
+    for (const auto& p: largest_blocks) {
+        if (number_of_checked_blocks >= maximum_number_of_checked_blocks)
+            break;
+        number_of_checked_blocks++;
+        const PeriodicBlock& block = *p.second;
+        std::vector<ShapeWithHoles> inflated_shapes;
+        std::vector<AxisAlignedBoundingBox> aabbs;
+        for (const SolutionItem& item: block.items) {
+            ShapeWithHoles item_shape = instance.item_shape_scaled(
+                    item.item_type_id, 0, item.angle, item.mirror);
+            item_shape.shift(item.bl_corner.x, item.bl_corner.y);
+            AxisAlignedBoundingBox aabb = item_shape.compute_min_max();
+            EXPECT_FALSE(shape::strictly_lesser(aabb.x_min, 0.0));
+            EXPECT_FALSE(shape::strictly_lesser(aabb.y_min, 0.0));
+            EXPECT_FALSE(shape::strictly_greater(aabb.x_max, block.bx));
+            EXPECT_FALSE(shape::strictly_greater(aabb.y_max, block.by));
+            inflated_shapes.push_back(shape::inflate(item_shape, spacing_scaled / 2 * 0.999));
+            aabbs.push_back(inflated_shapes.back().compute_min_max());
+        }
+        for (std::size_t pos_1 = 0; pos_1 < inflated_shapes.size(); ++pos_1) {
+            for (std::size_t pos_2 = pos_1 + 1; pos_2 < inflated_shapes.size(); ++pos_2) {
+                if (aabbs[pos_1].x_max <= aabbs[pos_2].x_min
+                        || aabbs[pos_2].x_max <= aabbs[pos_1].x_min
+                        || aabbs[pos_1].y_max <= aabbs[pos_2].y_min
+                        || aabbs[pos_2].y_max <= aabbs[pos_1].y_min) {
+                    continue;
+                }
+                EXPECT_FALSE(shape::intersect(inflated_shapes[pos_1], inflated_shapes[pos_2], true));
+            }
+        }
+    }
+}
+
+// alma_02 (fontanf/packingsolver data/irregular/alma2025), item types 0
+// (L-shapes) and 3: two L-shapes framing a pair of items of type 3 form an
+// exact 820 x 550 rectangle, the height of an L-shape. The blocks built from
+// the periodic packing clipped to the bin must contain this one: a block
+// whose items have the same right as an item above it used to be skipped.
+TEST(ComputePeriodicBlocksTest, WrappingBlockExactRectangle)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/wrapping_l_shapes_around_type_3_pairs.json");
+    Instance instance = instance_builder.build();
+    auto all_item_type_rotations = compute_item_type_rotations(instance);
+    std::vector<PeriodicBlock> blocks = compute_periodic_blocks(
+            instance,
+            instance.periodic_packings(),
+            all_item_type_rotations[instance.bin_type_id(0)]);
+
+    double scale_value = instance.parameters().scale_value;
+    const PeriodicBlock* smallest_block = nullptr;
+    for (const PeriodicBlock& block: blocks) {
+        ItemPos number_of_l_shapes = 0;
+        ItemPos number_of_others = 0;
+        for (const auto& kv: block.item_copies) {
+            if (kv.first == 0)
+                number_of_l_shapes += kv.second;
+            else
+                number_of_others += kv.second;
+        }
+        if (number_of_l_shapes == 2 && number_of_others == 2
+                && (smallest_block == nullptr
+                    || block.bx * block.by < smallest_block->bx * smallest_block->by)) {
+            smallest_block = &block;
+        }
+    }
+    ASSERT_NE(smallest_block, nullptr);
+    // Dimensions of the rectangle plus the trailing item-item spacing of a
+    // block.
+    EXPECT_NEAR(smallest_block->bx / scale_value, 820 + 10, 1e-3);
+    EXPECT_NEAR(smallest_block->by / scale_value, 550 + 10, 1e-3);
+}
+
+// Blocks framed by L-shapes (alma_02, item types 0 and 3): the framed blocks
+// are built from the bounding boxes of the blocks and the empty rectangles
+// of the L-shapes only, so their items must be checked: they must be inside
+// the blocks, and must not be closer than the item-item minimum spacing.
+TEST(ComputePeriodicBlocksTest, FramedBlocks)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/wrapping_l_shapes_around_type_3_pairs.json");
+    Instance instance = instance_builder.build();
+    auto all_item_type_rotations = compute_item_type_rotations(instance);
+    std::vector<PeriodicBlock> blocks = compute_periodic_blocks(
+            instance,
+            instance.periodic_packings(),
+            all_item_type_rotations[instance.bin_type_id(0)]);
+
+    LengthDbl spacing_scaled = instance.item_spacing_scaled();
+    ItemPos number_of_framed_blocks = 0;
+    for (const PeriodicBlock& block: blocks) {
+        if (block.packing_id != -1 || block.item_copies.size() < 2)
+            continue;
+        number_of_framed_blocks++;
+        if (block.number_of_items > 12)
+            continue;
+        std::vector<ShapeWithHoles> inflated_shapes;
+        std::vector<AxisAlignedBoundingBox> aabbs;
+        for (const SolutionItem& item: block.items) {
+            ShapeWithHoles item_shape = instance.item_shape_scaled(
+                    item.item_type_id, 0, item.angle, item.mirror);
+            item_shape.shift(item.bl_corner.x, item.bl_corner.y);
+            AxisAlignedBoundingBox aabb = item_shape.compute_min_max();
+            EXPECT_FALSE(shape::strictly_lesser(aabb.x_min, 0.0));
+            EXPECT_FALSE(shape::strictly_lesser(aabb.y_min, 0.0));
+            EXPECT_FALSE(shape::strictly_greater(aabb.x_max, block.bx));
+            EXPECT_FALSE(shape::strictly_greater(aabb.y_max, block.by));
+            inflated_shapes.push_back(shape::inflate(item_shape, spacing_scaled / 2 * 0.999));
+            aabbs.push_back(inflated_shapes.back().compute_min_max());
+        }
+        for (std::size_t pos_1 = 0; pos_1 < inflated_shapes.size(); ++pos_1) {
+            for (std::size_t pos_2 = pos_1 + 1; pos_2 < inflated_shapes.size(); ++pos_2) {
+                if (aabbs[pos_1].x_max <= aabbs[pos_2].x_min
+                        || aabbs[pos_2].x_max <= aabbs[pos_1].x_min
+                        || aabbs[pos_1].y_max <= aabbs[pos_2].y_min
+                        || aabbs[pos_2].y_max <= aabbs[pos_1].y_min) {
+                    continue;
+                }
+                EXPECT_FALSE(shape::intersect(inflated_shapes[pos_1], inflated_shapes[pos_2], true));
+            }
+        }
+    }
+    std::cout << "framed blocks " << number_of_framed_blocks << " / " << blocks.size() << std::endl;
+    EXPECT_GT(number_of_framed_blocks, 0);
+}
+
+// alma_02 (fontanf/packingsolver data/irregular/alma2025), item type 4: the
+// pair of an item and of an item rotated by 180 degrees, above and to the
+// left of it, stacked in columns aligned horizontally, has a density of about
+// 0.786. It used to be missed: only the pairs where the second item is not
+// below or to the left of the first one were considered, and the lattices
+// with a vector_2 perpendicular to vector_1 were not computed (the best one
+// had a density of about 0.700).
+TEST(ComputePeriodicPackingsInstanceTest, RectangularLattice)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.read("data/irregular/tests/periodic_blocks_lowered_items.json");
+    Instance instance = instance_builder.build();
+
+    double best_density = 0.0;
+    for (const PeriodicItemPacking& packing: instance.periodic_packings()) {
+        bool rectangular = (packing.vector_1.x == 0.0 && packing.vector_2.y == 0.0)
+            || (packing.vector_1.y == 0.0 && packing.vector_2.x == 0.0);
+        if (rectangular)
+            best_density = (std::max)(best_density, periodic_packing_density(instance, packing));
+    }
+    std::cout << "best rectangular density " << best_density << std::endl;
+    EXPECT_GT(best_density, 0.78);
 }

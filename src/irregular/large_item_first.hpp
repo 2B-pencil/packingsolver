@@ -49,8 +49,14 @@ struct LargeItemFirstParameters: packingsolver::Parameters<Instance, Solution, O
     /** Use local search with the linear programming engine in sub-problems. */
     bool use_local_search_linear_programming = false;
 
+    /** Use local search with the nonlinear programming engine in sub-problems. */
+    bool use_local_search_nonlinear_programming = false;
+
     /** Use local search with the direct trigonometry engine in sub-problems. */
     bool use_local_search_direct_trigonometry = false;
+
+    /** Use local search with the black-box optimization engine in sub-problems. */
+    bool use_local_search_black_box_optimization = false;
 
     /** Use MILP raster in sub-problems. */
     bool use_milp_raster = false;

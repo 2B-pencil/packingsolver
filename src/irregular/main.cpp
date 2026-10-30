@@ -64,6 +64,7 @@ int main(int argc, char *argv[])
             ("item-bin-minimum-spacing", po::value<LengthDbl>(), "Item-bin minimum spacing")
             ("item-item-minimum-spacing", po::value<LengthDbl>(), "Item-item minimum spacing")
             ("leftover-mode", po::value<LeftoverMode>(), "set leftover mode")
+            ("leftover-all-bins", po::value<bool>(), "also compare the leftover values of all the bins")
             ("bin-unweighted", "")
             ("unweighted", "")
             ("continuous-rotations", "")
@@ -84,9 +85,13 @@ int main(int argc, char *argv[])
             ("optimization-mode,", po::value<OptimizationMode>(), "set optimization mode")
             ("use-tree-search,", po::value<bool>(), "enable tree search algorithm")
             ("use-tree-search-periodic-packing,", po::value<bool>(), "enable tree search periodic packing algorithm")
+            ("use-tree-search-maximal-spaces,", po::value<bool>(), "enable tree search maximal spaces algorithm")
             ("use-milp-raster,", po::value<bool>(), "enable MILP raster algorithm")
             ("use-local-search-linear-programming,", po::value<bool>(), "enable local search algorithm with the linear programming engine")
+            ("use-local-search-nonlinear-programming,", po::value<bool>(), "enable local search algorithm with the nonlinear programming engine (requires Knitro)")
             ("use-local-search-direct-trigonometry,", po::value<bool>(), "enable local search algorithm with the direct trigonometry engine")
+            ("use-local-search-black-box-optimization,", po::value<bool>(), "enable local search algorithm with the black-box optimization engine (requires Knitro)")
+            ("local-search-weighting-scheme,", po::value<LocalSearchWeightingScheme>(), "set the weighting scheme of the local search: multiplicative, additive")
             ("use-sequential-single-knapsack,", po::value<bool>(), "enable sequential-single-knapsack")
             ("use-sequential-value-correction,", po::value<bool>(), "enable sequential-value-correction")
             ("use-column-generation,", po::value<bool>(), "enable column-generation")
@@ -96,13 +101,20 @@ int main(int argc, char *argv[])
             ("maximum-approximation-ratio-factor,", po::value<double>(), "decrease factor for the maximum approximation ratio")
             ("sequential-value-correction-subproblem-tree-search-queue-size,", po::value<NodeId>(), "set sequential value correction subproblem queue size")
             ("column-generation-subproblem-tree-search-queue-size,", po::value<NodeId>(), "set column generation subproblem queue size")
+            ("post-process-last-bin-maximum-number-of-items,", po::value<ItemPos>(), "re-optimize the last bin in the post-process only if it contains fewer items")
             ("not-anytime-maximum-approximation-ratio,", po::value<double>(), "")
             ("not-anytime-tree-search-queue-size,", po::value<Counter>(), "")
             ("not-anytime-tree-search-periodic-packing-queue-size,", po::value<Counter>(), "")
+            ("not-anytime-tree-search-maximal-spaces-queue-size,", po::value<Counter>(), "")
             ("not-anytime-sequential-single-knapsack-subproblem-tree-search-queue-size,", po::value<Counter>(), "")
             ("not-anytime-sequential-value-correction-number-of-iterations,", po::value<Counter>(), "")
-            ("not-anytime-local-search-maximum-number-of-iterations-without-improvement,", po::value<Counter>(), "")
             ("not-anytime-local-search-maximum-number-of-failed-separations,", po::value<Counter>(), "")
+            ("not-anytime-local-search-maximum-number-of-moves-factor,", po::value<Counter>(), "")
+            ("anytime-sequential-single-knapsack-subproblem-tree-search-initial-queue-size,", po::value<NodeId>(), "")
+            ("anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-initial-queue-size,", po::value<NodeId>(), "")
+            ("anytime-sequential-single-knapsack-subproblem-local-search-initial-maximum-number-of-moves-factor,", po::value<Counter>(), "")
+            ("not-anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-queue-size,", po::value<NodeId>(), "")
+            ("not-anytime-sequential-single-knapsack-subproblem-local-search-maximum-number-of-moves-factor,", po::value<Counter>(), "")
             ("not-anytime-dichotomic-search-subproblem-tree-search-queue-size,", po::value<Counter>(), "")
 
             ("group-identical-bins,", po::value<bool>(), "")
@@ -134,6 +146,8 @@ int main(int argc, char *argv[])
             instance_builder.set_item_item_minimum_spacing(vm["item-item-minimum-spacing"].as<LengthDbl>());
         if (vm.count("leftover-mode"))
             instance_builder.set_leftover_mode(vm["leftover-mode"].as<LeftoverMode>());
+        if (vm.count("leftover-all-bins"))
+            instance_builder.set_leftover_all_bins(vm["leftover-all-bins"].as<bool>());
         if (vm.count("unweighted"))
             instance_builder.set_item_types_unweighted();
         if (vm.count("bin-unweighted"))
@@ -165,12 +179,18 @@ int main(int argc, char *argv[])
             parameters.use_tree_search = vm["use-tree-search"].as<bool>();
         if (vm.count("use-tree-search-periodic-packing"))
             parameters.use_tree_search_periodic_packing = vm["use-tree-search-periodic-packing"].as<bool>();
+        if (vm.count("use-tree-search-maximal-spaces"))
+            parameters.use_tree_search_maximal_spaces = vm["use-tree-search-maximal-spaces"].as<bool>();
         if (vm.count("use-milp-raster"))
             parameters.use_milp_raster = vm["use-milp-raster"].as<bool>();
         if (vm.count("use-local-search-linear-programming"))
             parameters.use_local_search_linear_programming = vm["use-local-search-linear-programming"].as<bool>();
+        if (vm.count("use-local-search-nonlinear-programming"))
+            parameters.use_local_search_nonlinear_programming = vm["use-local-search-nonlinear-programming"].as<bool>();
         if (vm.count("use-local-search-direct-trigonometry"))
             parameters.use_local_search_direct_trigonometry = vm["use-local-search-direct-trigonometry"].as<bool>();
+        if (vm.count("use-local-search-black-box-optimization"))
+            parameters.use_local_search_black_box_optimization = vm["use-local-search-black-box-optimization"].as<bool>();
         if (vm.count("use-sequential-single-knapsack"))
             parameters.use_sequential_single_knapsack = vm["use-sequential-single-knapsack"].as<bool>();
         if (vm.count("use-sequential-value-correction"))
@@ -190,20 +210,36 @@ int main(int argc, char *argv[])
             parameters.sequential_value_correction_subproblem_tree_search_queue_size = vm["sequential-value-correction-subproblem-tree-search-queue-size"].as<NodeId>();
         if (vm.count("column-generation-subproblem-tree-search-queue-size"))
             parameters.column_generation_subproblem_tree_search_queue_size = vm["column-generation-subproblem-tree-search-queue-size"].as<NodeId>();
+        if (vm.count("post-process-last-bin-maximum-number-of-items"))
+            parameters.post_process_last_bin_maximum_number_of_items = vm["post-process-last-bin-maximum-number-of-items"].as<ItemPos>();
         if (vm.count("not-anytime-maximum-approximation-ratio"))
             parameters.not_anytime_maximum_approximation_ratio = vm["not-anytime-maximum-approximation-ratio"].as<double>();
         if (vm.count("not-anytime-tree-search-queue-size"))
             parameters.not_anytime_tree_search_queue_size = vm["not-anytime-tree-search-queue-size"].as<Counter>();
         if (vm.count("not-anytime-tree-search-periodic-packing-queue-size"))
             parameters.not_anytime_tree_search_periodic_packing_queue_size = vm["not-anytime-tree-search-periodic-packing-queue-size"].as<Counter>();
+        if (vm.count("not-anytime-tree-search-maximal-spaces-queue-size"))
+            parameters.not_anytime_tree_search_maximal_spaces_queue_size = vm["not-anytime-tree-search-maximal-spaces-queue-size"].as<Counter>();
         if (vm.count("not-anytime-sequential-single-knapsack-subproblem-tree-search-queue-size"))
             parameters.not_anytime_sequential_single_knapsack_subproblem_tree_search_queue_size = vm["not-anytime-sequential-single-knapsack-subproblem-tree-search-queue-size"].as<Counter>();
         if (vm.count("not-anytime-sequential-value-correction-number-of-iterations"))
             parameters.not_anytime_sequential_value_correction_number_of_iterations = vm["not-anytime-sequential-value-correction-number-of-iterations"].as<Counter>();
-        if (vm.count("not-anytime-local-search-maximum-number-of-iterations-without-improvement"))
-            parameters.not_anytime_local_search_maximum_number_of_iterations_without_improvement = vm["not-anytime-local-search-maximum-number-of-iterations-without-improvement"].as<Counter>();
+        if (vm.count("local-search-weighting-scheme"))
+            parameters.local_search_weighting_scheme = vm["local-search-weighting-scheme"].as<LocalSearchWeightingScheme>();
         if (vm.count("not-anytime-local-search-maximum-number-of-failed-separations"))
             parameters.not_anytime_local_search_maximum_number_of_failed_separations = vm["not-anytime-local-search-maximum-number-of-failed-separations"].as<Counter>();
+        if (vm.count("not-anytime-local-search-maximum-number-of-moves-factor"))
+            parameters.not_anytime_local_search_maximum_number_of_moves_factor = vm["not-anytime-local-search-maximum-number-of-moves-factor"].as<Counter>();
+        if (vm.count("anytime-sequential-single-knapsack-subproblem-tree-search-initial-queue-size"))
+            parameters.anytime_sequential_single_knapsack_subproblem_tree_search_initial_queue_size = vm["anytime-sequential-single-knapsack-subproblem-tree-search-initial-queue-size"].as<NodeId>();
+        if (vm.count("anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-initial-queue-size"))
+            parameters.anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_initial_queue_size = vm["anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-initial-queue-size"].as<NodeId>();
+        if (vm.count("anytime-sequential-single-knapsack-subproblem-local-search-initial-maximum-number-of-moves-factor"))
+            parameters.anytime_sequential_single_knapsack_subproblem_local_search_initial_maximum_number_of_moves_factor = vm["anytime-sequential-single-knapsack-subproblem-local-search-initial-maximum-number-of-moves-factor"].as<Counter>();
+        if (vm.count("not-anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-queue-size"))
+            parameters.not_anytime_sequential_single_knapsack_subproblem_tree_search_periodic_packing_queue_size = vm["not-anytime-sequential-single-knapsack-subproblem-tree-search-periodic-packing-queue-size"].as<NodeId>();
+        if (vm.count("not-anytime-sequential-single-knapsack-subproblem-local-search-maximum-number-of-moves-factor"))
+            parameters.not_anytime_sequential_single_knapsack_subproblem_local_search_maximum_number_of_moves_factor = vm["not-anytime-sequential-single-knapsack-subproblem-local-search-maximum-number-of-moves-factor"].as<Counter>();
         if (vm.count("not-anytime-dichotomic-search-subproblem-tree-search-queue-size"))
             parameters.not_anytime_dichotomic_search_subproblem_tree_search_queue_size = vm["not-anytime-dichotomic-search-subproblem-tree-search-queue-size"].as<Counter>();
         const irregular::Output output = optimize(instance, parameters);

@@ -7,7 +7,10 @@
 
 #pragma once
 
-#include "irregular/local_search_direct_trigonometry/separator.hpp"
+#include "irregular/black_box_optimization/separator.hpp"
+#include "irregular/direct_trigonometry/separator.hpp"
+#include "irregular/linear_programming/separator.hpp"
+#include "irregular/nonlinear_programming/separator.hpp"
 
 #include "packingsolver/irregular/optimize.hpp"
 
@@ -29,11 +32,27 @@ enum class LocalSearchEngine
     DirectTrigonometry,
 
     /**
-     * Shrinkage minimization: the items are packed one by one; the items of a
-     * bin are shrunk to remove the overlap, and a linear program minimizes the
-     * shrinkage.
+     * Linear programming: the items may be shrunk instead of overlapping, and
+     * the separator solves linear programs maximizing their weighted scales
+     * (see 'linear_programming/separator.hpp').
      */
     LinearProgramming,
+
+    /**
+     * Nonlinear programming: as the linear programming engine, but the
+     * separator solves nonlinear programs, in which the items may also rotate
+     * within their allowed rotation ranges (see
+     * 'nonlinear_programming/separator.hpp'). Requires Knitro.
+     */
+    NonlinearProgramming,
+
+    /**
+     * Black-box optimization: the items may overlap, and the separator solves
+     * nonlinear programs minimizing their squared penetration depths,
+     * computed from their no-fit polygons (see
+     * 'black_box_optimization/separator.hpp'). Requires Knitro.
+     */
+    BlackBoxOptimization,
 };
 
 struct LocalSearchOutput: Output
@@ -55,6 +74,23 @@ struct LocalSearchParameters: packingsolver::Parameters<Instance, Solution, Outp
 
     /** Shrink ratio (see 'SequentialFeasibilityParameters'). */
     double shrink_ratio = 0.001;
+
+    /**
+     * Maximum number of item moves per worker of the separator (see
+     * 'Separator::MovesLimit'), over the whole local search, including all
+     * the sub-problems of the sequential feasibility algorithm. When it is
+     * reached, the local search stops as at the end of the time limit,
+     * keeping the best solution found.
+     *
+     * Only used by the direct trigonometry engine. -1 means no limit.
+     */
+    Counter maximum_number_of_moves = -1;
+
+    /**
+     * Limit on the number of moves shared with the sub-problems; set by the
+     * local search itself from 'maximum_number_of_moves'.
+     */
+    std::shared_ptr<Separator::MovesLimit> moves_limit;
 
     /*
      * Parameters of the direct trigonometry engine.
@@ -130,13 +166,37 @@ struct LocalSearchParameters: packingsolver::Parameters<Instance, Solution, Outp
      * Parameters of the linear programming engine.
      */
 
-    /**
-     * Maximum number of iterations without improvement when packing an
-     * item, after which the item is considered not to fit.
-     *
-     * -1 (the default) means no limit.
+    /** Parameters of the separator. */
+    LinearProgrammingSeparatorParameters linear_programming_separator_parameters;
+
+    /*
+     * Parameters of the nonlinear programming engine.
      */
-    Counter maximum_number_of_iterations_without_improvement = -1;
+
+    /** Parameters of the separator. */
+    NonlinearProgrammingSeparatorParameters nonlinear_programming_separator_parameters;
+
+    /*
+     * Parameters of the black-box optimization engine.
+     */
+
+    /**
+     * Parameters of the separator.
+     *
+     * The item types of its direct trigonometry separator are
+     * 'separator_item_types', and its stopping criteria of the separation of
+     * the initial layout are the ones above.
+     */
+    BlackBoxOptimizationSeparatorParameters black_box_optimization_separator_parameters;
+
+    /**
+     * No-fit polygons of the separator, if already built; built from the
+     * instance otherwise.
+     *
+     * For the other objectives than Feasibility, they are shared by the
+     * sub-problems of the sequential feasibility algorithm.
+     */
+    std::shared_ptr<ItemNoFitPolygons> black_box_optimization_no_fit_polygons;
 };
 
 /**
@@ -157,8 +217,7 @@ struct LocalSearchParameters: packingsolver::Parameters<Instance, Solution, Outp
  *
  * For the other objectives than Feasibility, it is the warm start of the first
  * sub-problem of the sequential feasibility algorithm; the next sub-problems
- * are warm-started from the previous solution found. The linear programming
- * engine doesn't use it.
+ * are warm-started from the previous solution found.
  */
 LocalSearchOutput local_search(
         const Instance& instance,
