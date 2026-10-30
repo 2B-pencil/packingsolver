@@ -858,7 +858,7 @@ packingsolver::box::Output packingsolver::box::optimize(
     // get it, instead of only at the end.
     bool local = deterministic || post_process_applies(instance, parameters);
     if (local && !deterministic) {
-        local_parameters.new_solution_callback = [&algorithm_formatter](const Output& local_output)
+        local_parameters.new_solution_callback = [&algorithm_formatter](const packingsolver::box::Output& local_output)
         {
             algorithm_formatter.update_solution(
                     local_output.solution_pool.best(),
