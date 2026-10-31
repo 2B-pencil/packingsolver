@@ -130,7 +130,9 @@ SelectionFeasibility selection_feasibility(
     sub_parameters.verbosity_level = 0;
     sub_parameters.timer = parameters.timer;
     sub_parameters.optimization_mode
-        = (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
+        = (parameters.optimization_mode == OptimizationMode::Exact)?
+        OptimizationMode::Exact:
+        (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
         OptimizationMode::NotAnytimeSequential:
         OptimizationMode::NotAnytimeDeterministic;
     sub_parameters.not_anytime_tree_search_queue_size = parameters.subproblem_queue_size;
@@ -786,8 +788,10 @@ ResourceCut packingsolver::rectangle::lift_no_good_cut(
             (ItemPos)std::floor(alpha + 1e-6) : 0;
 
         if (alpha_rounded > 0) {
+            // The presence of j* in the bin is worth 'alpha_rounded': its
+            // first copy consumes all of it, its other copies nothing.
             lifted_cut.consumption.push_back(
-                    {candidate_id, threshold_schedule(alpha_rounded)});
+                    {candidate_id, {(double)alpha_rounded, 0.0}});
             s_entries.push_back({candidate_id, 1, (double)alpha_rounded});
         }
     }
@@ -832,6 +836,7 @@ BendersDecompositionOutput packingsolver::rectangle::benders_decomposition(
 
         // Check maximum number of iterations.
         if (parameters.optimization_mode != OptimizationMode::Anytime
+                && parameters.optimization_mode != OptimizationMode::Exact
                 && parameters.not_anytime_maximum_number_of_iterations >= 0
                 && output.number_of_iterations >= parameters.not_anytime_maximum_number_of_iterations) {
             break;
@@ -850,7 +855,9 @@ BendersDecompositionOutput packingsolver::rectangle::benders_decomposition(
         master_parameters.verbosity_level = 0;
         master_parameters.timer = parameters.timer;
         master_parameters.optimization_mode
-            = (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
+            = (parameters.optimization_mode == OptimizationMode::Exact)?
+            OptimizationMode::Exact:
+            (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
             OptimizationMode::NotAnytimeSequential:
             OptimizationMode::NotAnytimeDeterministic;
         master_parameters.use_tree_search = parameters.master_problem_use_tree_search;
@@ -1040,6 +1047,7 @@ BendersDecompositionOutput packingsolver::rectangle::benders_decomposition(
         // least one subproblem below (the 'continue' above skips it
         // otherwise).
         if (parameters.optimization_mode != OptimizationMode::Anytime
+                && parameters.optimization_mode != OptimizationMode::Exact
                 && parameters.not_anytime_maximum_number_of_subproblem_solves >= 0
                 && number_of_subproblem_solves >= parameters.not_anytime_maximum_number_of_subproblem_solves) {
             break;
@@ -1101,7 +1109,9 @@ BendersDecompositionOutput packingsolver::rectangle::benders_decomposition(
             sub_parameters.verbosity_level = 0;
             sub_parameters.timer = parameters.timer;
             sub_parameters.optimization_mode
-                = (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
+                = (parameters.optimization_mode == OptimizationMode::Exact)?
+                OptimizationMode::Exact:
+                (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
                 OptimizationMode::NotAnytimeSequential:
                 OptimizationMode::NotAnytimeDeterministic;
             sub_parameters.not_anytime_tree_search_queue_size = parameters.subproblem_queue_size;
