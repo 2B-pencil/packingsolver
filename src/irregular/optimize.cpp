@@ -8,6 +8,9 @@
 #include "irregular/tree_search_periodic_packing.hpp"
 #include "irregular/tree_search_maximal_spaces.hpp"
 #include "irregular/milp_raster.hpp"
+#include "irregular/benders_decomposition.hpp"
+#include "irregular/tree_search_relative_positions.hpp"
+#include "irregular/global_nonlinear_programming.hpp"
 #include "irregular/local_search.hpp"
 #include "algorithms/dichotomic_search.hpp"
 #include "algorithms/sequential_value_correction.hpp"
@@ -15,6 +18,7 @@
 #include "algorithms/thread_pool.hpp"
 #include "packingsolver/onedimensional/instance_builder.hpp"
 #include "packingsolver/onedimensional/optimize.hpp"
+#include "onedimensional/trivial_bound.hpp"
 
 using namespace packingsolver;
 using namespace packingsolver::irregular;
@@ -215,12 +219,63 @@ void optimize_onedimensional_bound(
         OptimizationMode::NotAnytimeSequential:
         OptimizationMode::NotAnytime;
     onedim_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
-    auto onedim_output = optimize(onedim_instance, onedim_parameters);
+    onedimensional::TrivialBoundParameters onedim_trivial_bound_parameters;
+    onedim_trivial_bound_parameters.verbosity_level = 0;
+    onedim_trivial_bound_parameters.timer = parameters.timer;
+    onedim_trivial_bound_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    onedim_trivial_bound_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    // With many item types, solving the onedimensional instance may take a
+    // long time (e.g. column generation), so only its trivial bound is
+    // computed.
+    onedimensional::Output onedim_output = (instance.number_of_item_types() < 100)?
+        onedimensional::optimize(onedim_instance, onedim_parameters):
+        onedimensional::trivial_bound(onedim_instance, onedim_trivial_bound_parameters);
 
     // The one-dimensional instance is a relaxation: if it is infeasible, so
-    // is the instance.
-    if (onedim_output.is_proven_infeasible)
+    // is the instance. With a single bin, the largest items whose areas
+    // exceed the one of the bin are an infeasible subset.
+    if (onedim_output.is_proven_infeasible) {
         algorithm_formatter.update_is_proven_infeasible();
+        if (instance.number_of_bins() == 1) {
+            BinTypeId bin_type_id = 0;
+            while (instance.bin_type(bin_type_id).copies == 0)
+                bin_type_id++;
+            Length bin_length = std::ceil(instance.bin_type(bin_type_id).area_scaled);
+            std::vector<ItemTypeId> item_type_ids;
+            for (ItemTypeId item_type_id = 0;
+                    item_type_id < instance.number_of_item_types();
+                    ++item_type_id) {
+                item_type_ids.push_back(item_type_id);
+            }
+            std::sort(
+                    item_type_ids.begin(),
+                    item_type_ids.end(),
+                    [&instance](ItemTypeId item_type_id_1, ItemTypeId item_type_id_2)
+                    {
+                        return instance.item_type(item_type_id_1).area_scaled
+                            > instance.item_type(item_type_id_2).area_scaled;
+                    });
+            std::vector<std::pair<ItemTypeId, ItemPos>> infeasible_subset;
+            Length length = 0;
+            for (ItemTypeId item_type_id: item_type_ids) {
+                const ItemType& item_type = instance.item_type(item_type_id);
+                Length item_length = std::floor(item_type.area_scaled);
+                if (item_length == 0 || item_type.copies == 0)
+                    continue;
+                // Number of copies needed to exceed the area of the bin.
+                ItemPos copies = (std::min)(
+                        item_type.copies,
+                        (ItemPos)((bin_length - length) / item_length + 1));
+                infeasible_subset.push_back({item_type_id, copies});
+                length += copies * item_length;
+                if (length > bin_length) {
+                    std::sort(infeasible_subset.begin(), infeasible_subset.end());
+                    algorithm_formatter.update_is_proven_infeasible(infeasible_subset);
+                    break;
+                }
+            }
+        }
+    }
 
     std::stringstream ss("1D");
     switch (instance.objective()) {
@@ -287,6 +342,7 @@ void optimize_tree_search(
     ts_parameters.initial_maximum_approximation_ratio = parameters.initial_maximum_approximation_ratio;
     ts_parameters.not_anytime_maximum_approximation_ratio = parameters.not_anytime_maximum_approximation_ratio;
     ts_parameters.maximum_approximation_ratio_factor = parameters.maximum_approximation_ratio_factor;
+    ts_parameters.minimum_maximum_approximation_ratio = parameters.minimum_maximum_approximation_ratio;
     ts_parameters.json_search_tree_path = parameters.json_search_tree_path;
     ts_parameters.new_solution_callback = [&algorithm_formatter](
             const irregular::Output& ts_output)
@@ -544,6 +600,12 @@ void optimize_sequential_single_knapsack(
                 auto kp_output = optimize(kp_instance, kp_parameters);
                 return kp_output.solution_pool;
             };
+        // Simplify the shapes once for all the subproblems of this iteration,
+        // with the approximation budget of the whole instance, instead of
+        // once per subproblem, with the much smaller budget of a single bin.
+        instance.get_simplified_instance(
+                maximum_approximation_ratio,
+                algorithm_formatter.end_boolean());
         SequentialValueCorrectionParameters<Instance, Solution, irregular::Output> svc_parameters;
         svc_parameters.verbosity_level = 0;
         svc_parameters.timer = parameters.timer;
@@ -553,12 +615,6 @@ void optimize_sequential_single_knapsack(
         // from this initial value - see 'SequentialValueCorrectionParameters::
         // initial_profit_exponent''s own doc comment.
         svc_parameters.initial_profit_exponent = 1.0;
-        svc_parameters.item_type_fits_bin_type = [&instance](
-                ItemTypeId item_type_id,
-                BinTypeId bin_type_id)
-        {
-            return instance.item_type_fits_bin_type(item_type_id, bin_type_id);
-        };
         svc_parameters.restrict_bin_types
             = parameters.sequential_value_correction_restrict_bin_types;
         svc_parameters.scarce_item_types_profit_factor_exponent
@@ -590,7 +646,9 @@ void optimize_sequential_single_knapsack(
                 growth_factor + 1,
                 (Counter)(growth_factor * 2));
         // Update maximum approximation ratio.
-        maximum_approximation_ratio *= parameters.maximum_approximation_ratio_factor;
+        maximum_approximation_ratio = (std::max)(
+                parameters.minimum_maximum_approximation_ratio,
+                maximum_approximation_ratio * parameters.maximum_approximation_ratio_factor);
     }
 }
 
@@ -608,6 +666,13 @@ void optimize_sequential_value_correction(
                 parameters.sequential_value_correction_subproblem_tree_search_queue_size - 1,
                 parameters.anytime_sequential_value_correction_growing_queue_maximum_number_of_iterations);
     }
+
+    // Simplify the shapes once for all the subproblems, which are solved with
+    // the not-anytime maximum approximation ratio, with the approximation
+    // budget of the whole instance.
+    instance.get_simplified_instance(
+            parameters.not_anytime_maximum_approximation_ratio,
+            algorithm_formatter.end_boolean());
 
     SequentialValueCorrectionFunction<Instance, Solution> kp_solve
         = [&algorithm_formatter, &parameters](const Instance& kp_instance)
@@ -634,12 +699,6 @@ void optimize_sequential_value_correction(
     svc_parameters.timer = parameters.timer;
     svc_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
     svc_parameters.initial_profit_exponent = 1.1;
-    svc_parameters.item_type_fits_bin_type = [&instance](
-            ItemTypeId item_type_id,
-            BinTypeId bin_type_id)
-    {
-        return instance.item_type_fits_bin_type(item_type_id, bin_type_id);
-    };
     svc_parameters.restrict_bin_types
         = parameters.sequential_value_correction_restrict_bin_types;
     svc_parameters.scarce_item_types_profit_factor_exponent
@@ -726,7 +785,9 @@ void optimize_dichotomic_search(
                 queue_size + 1,
                 (NodeId)(queue_size * 2));
         // Update maximum approximation ratio.
-        maximum_approximation_ratio *= parameters.maximum_approximation_ratio_factor;
+        maximum_approximation_ratio = (std::max)(
+                parameters.minimum_maximum_approximation_ratio,
+                maximum_approximation_ratio * parameters.maximum_approximation_ratio_factor);
 
         waste_percentage_upper_bound = ds_output.waste_percentage_upper_bound;
     }
@@ -738,7 +799,7 @@ void optimize_column_generation(
         AlgorithmFormatter& algorithm_formatter)
 {
     ColumnGenerationPricingFunction<Instance, InstanceBuilder, Solution, irregular::Output> pricing_function
-        = [&algorithm_formatter, &parameters](const Instance& kp_instance, PricingType)
+        = [&algorithm_formatter, &parameters](const Instance& kp_instance, PricingType pricing_type)
         {
             OptimizeParameters kp_parameters;
             kp_parameters.seed = parameters.seed;
@@ -755,6 +816,17 @@ void optimize_column_generation(
                 = parameters.column_generation_subproblem_tree_search_queue_size;
             kp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
             kp_parameters.local_search_weighting_scheme = parameters.local_search_weighting_scheme;
+            // 'PricingType::Dual' calls are rare and exist to prove a bound:
+            // force the Benders decomposition alone, with the tree search on
+            // relative positions in its subproblems so that its cuts, and so
+            // its bound, are proven. In 'Exact' mode, also solved in 'Exact'
+            // mode so that the bound is actually proven.
+            if (pricing_type == PricingType::Dual) {
+                if (parameters.optimization_mode == OptimizationMode::Exact)
+                    kp_parameters.optimization_mode = OptimizationMode::Exact;
+                kp_parameters.use_benders_decomposition = true;
+                kp_parameters.benders_decomposition_use_tree_search_relative_positions = true;
+            }
             return optimize(kp_instance, kp_parameters);
         };
 
@@ -764,6 +836,7 @@ void optimize_column_generation(
     cg_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
     cg_parameters.optimization_mode = parameters.optimization_mode;
     cg_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    cg_parameters.pricing_function_has_dual_bound = true;
     cg_parameters.new_solution_callback = [&algorithm_formatter](
             const irregular::Output& ps_output)
     {
@@ -830,6 +903,7 @@ void optimize_milp_raster(
     milp_raster_parameters.verbosity_level = 0;
     milp_raster_parameters.timer = parameters.timer;
     milp_raster_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    milp_raster_parameters.optimization_mode = parameters.optimization_mode;
     milp_raster_parameters.new_solution_callback = [&algorithm_formatter](
             const irregular::Output& output) {
         algorithm_formatter.update_solution(
@@ -838,6 +912,79 @@ void optimize_milp_raster(
         algorithm_formatter.update_bounds(output);
     };
     milp_raster(instance, milp_raster_parameters);
+}
+
+void optimize_benders_decomposition(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    BendersDecompositionParameters bd_parameters;
+    bd_parameters.verbosity_level = 0;
+    bd_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    bd_parameters.timer = parameters.timer;
+    bd_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    bd_parameters.optimization_mode = parameters.optimization_mode;
+    bd_parameters.not_anytime_maximum_number_of_iterations
+        = parameters.not_anytime_benders_decomposition_number_of_iterations;
+    bd_parameters.subproblem_queue_size
+        = parameters.benders_decomposition_subproblem_tree_search_queue_size;
+    // In 'Exact' mode, the tree search on relative positions is used so that
+    // the cuts are proven.
+    bd_parameters.subproblem_use_tree_search_relative_positions
+        = parameters.benders_decomposition_use_tree_search_relative_positions
+        || parameters.optimization_mode == OptimizationMode::Exact;
+    bd_parameters.new_solution_callback = [&algorithm_formatter](
+            const irregular::Output& output)
+    {
+        const BendersDecompositionOutput& bd_output
+            = static_cast<const BendersDecompositionOutput&>(output);
+        std::stringstream ss;
+        ss << "BD " << bd_output.number_of_iterations;
+        algorithm_formatter.update_solution(bd_output.solution_pool.best(), ss.str());
+        algorithm_formatter.update_bounds(bd_output);
+    };
+    benders_decomposition(instance, bd_parameters);
+}
+
+void optimize_tree_search_relative_positions(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    TreeSearchRelativePositionsParameters tsrp_parameters;
+    tsrp_parameters.verbosity_level = 0;
+    tsrp_parameters.timer = parameters.timer;
+    tsrp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    if (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)
+        tsrp_parameters.number_of_threads = 1;
+    tsrp_parameters.new_solution_callback = [&algorithm_formatter](
+            const irregular::Output& output) {
+        algorithm_formatter.update_solution(
+                output.solution_pool.best(),
+                "TSRP");
+        algorithm_formatter.update_bounds(output);
+    };
+    tree_search_relative_positions(instance, tsrp_parameters);
+}
+
+void optimize_global_nonlinear_programming(
+        const Instance& instance,
+        const OptimizeParameters& parameters,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    GlobalNonlinearProgrammingParameters gnlp_parameters;
+    gnlp_parameters.verbosity_level = 0;
+    gnlp_parameters.timer = parameters.timer;
+    gnlp_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    gnlp_parameters.new_solution_callback = [&algorithm_formatter](
+            const irregular::Output& output) {
+        algorithm_formatter.update_solution(
+                output.solution_pool.best(),
+                "GNLP");
+        algorithm_formatter.update_bounds(output);
+    };
+    global_nonlinear_programming(instance, gnlp_parameters);
 }
 
 /**
@@ -902,7 +1049,8 @@ ItemPos max_number_of_items_in_bin(const Instance& instance)
 
 /**
  * Prove the instance infeasible if an item type doesn't fit in any bin type:
- * with every objective but 'Knapsack', every item must be packed.
+ * with every objective but 'Knapsack', every item must be packed. The
+ * infeasible subset is a single copy of this item type.
  *
  * Only uses 'Instance::fits_some_bin', which is a cheap necessary condition.
  */
@@ -918,7 +1066,7 @@ void optimize_item_types_fit(
         if (instance.item_type(item_type_id).copies == 0)
             continue;
         if (!instance.fits_some_bin(item_type_id)) {
-            algorithm_formatter.update_is_proven_infeasible();
+            algorithm_formatter.update_is_proven_infeasible({{item_type_id, 1}});
             return;
         }
     }
@@ -962,6 +1110,14 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
                 algorithm_formatter.update_solution(
                         reduction.unreduce_solution(reduced_output.solution_pool.best()),
                         reduced_output.solution_pool.best_label());
+                // The infeasible subset is unreduced first; then,
+                // 'update_bounds' keeps it, since the one of the reduced
+                // output has the same number of items.
+                if (reduced_output.is_proven_infeasible) {
+                    algorithm_formatter.update_is_proven_infeasible(
+                            reduction.unreduce_infeasible_subset(
+                                reduced_output.infeasible_subset));
+                }
                 algorithm_formatter.update_bounds(reduced_output);
             };
 
@@ -1036,6 +1192,19 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
     bool use_dichotomic_search = parameters.use_dichotomic_search;
     bool use_column_generation = parameters.use_column_generation;
     bool use_milp_raster = parameters.use_milp_raster;
+    bool use_benders_decomposition = parameters.use_benders_decomposition;
+    bool use_tree_search_relative_positions = parameters.use_tree_search_relative_positions;
+    bool use_global_nonlinear_programming = parameters.use_global_nonlinear_programming;
+    if (instance.objective() != Objective::Feasibility
+            || instance.number_of_bins() != 1) {
+        use_global_nonlinear_programming = false;
+    }
+    // Benders decomposition only supports these objectives.
+    if (instance.objective() != Objective::Knapsack
+            && instance.objective() != Objective::BinPacking
+            && instance.objective() != Objective::VariableSizedBinPacking) {
+        use_benders_decomposition = false;
+    }
     if (instance.number_of_bins() <= 1) {
         // Disable algorithms which are not available for this objective.
         use_sequential_single_knapsack = false;
@@ -1050,8 +1219,16 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
             use_local_search_linear_programming = false;
             use_local_search_nonlinear_programming = false;
         }
+        if (instance.objective() != Objective::Feasibility
+                && instance.objective() != Objective::OpenDimensionX
+                && instance.objective() != Objective::OpenDimensionY) {
+            use_tree_search_relative_positions = false;
+        }
         // Automatic selection.
         if (!use_tree_search
+                && !use_benders_decomposition
+                && !use_tree_search_relative_positions
+                && !use_global_nonlinear_programming
                 && !use_tree_search_periodic_packing
                 && !use_tree_search_maximal_spaces
                 && !use_local_search_linear_programming
@@ -1090,6 +1267,31 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
                     < parameters.periodic_packing_max_items_threshold;
             if (instance.objective() != Objective::Knapsack)
                 use_local_search_direct_trigonometry = true;
+            // In 'Exact' mode, also run the algorithms which can prove
+            // optimality.
+            if (parameters.optimization_mode == OptimizationMode::Exact) {
+                if (instance.objective() == Objective::Knapsack)
+                    use_benders_decomposition = true;
+                if ((instance.objective() == Objective::Feasibility
+                            && instance.number_of_bins() == 1)
+                        || instance.objective() == Objective::OpenDimensionX
+                        || instance.objective() == Objective::OpenDimensionY) {
+                    use_tree_search_relative_positions = true;
+                }
+                // The tree search on relative positions proves nothing with
+                // continuous rotations.
+                bool continuous_rotations = false;
+                for (ItemTypeId item_type_id = 0;
+                        item_type_id < instance.number_of_item_types();
+                        ++item_type_id) {
+                    if (!instance.item_type(item_type_id).has_only_discrete_rotations())
+                        continuous_rotations = true;
+                }
+                if (continuous_rotations
+                        && global_nonlinear_programming_supports(instance)) {
+                    use_global_nonlinear_programming = true;
+                }
+            }
         }
     } else if (instance.objective() == Objective::Feasibility) {
         // Disable algorithms which are not available for this objective.
@@ -1097,6 +1299,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         use_local_search_nonlinear_programming = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
+        use_tree_search_relative_positions = false;
         // Automatic selection.
         if (!use_tree_search
                 && !use_local_search_direct_trigonometry
@@ -1127,8 +1330,10 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         use_local_search_nonlinear_programming = false;
         use_dichotomic_search = false;
         use_tree_search_periodic_packing = false;
+        use_tree_search_relative_positions = false;
         // Automatic selection.
         if (!use_tree_search
+                && !use_benders_decomposition
                 && !use_milp_raster
                 && !use_sequential_single_knapsack
                 && !use_sequential_value_correction
@@ -1169,8 +1374,10 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         }
         use_dichotomic_search = false;
         use_milp_raster = false;
+        use_tree_search_relative_positions = false;
         // Automatic selection.
         if (!use_tree_search
+                && !use_benders_decomposition
                 && !use_tree_search_periodic_packing
                 && !use_local_search_linear_programming
                 && !use_local_search_nonlinear_programming
@@ -1212,6 +1419,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         use_local_search_direct_trigonometry = false;
         use_local_search_black_box_optimization = false;
         use_tree_search_periodic_packing = false;
+        use_tree_search_relative_positions = false;
         if (instance.number_of_bin_types() == 1) {
             if (use_dichotomic_search) {
                 use_dichotomic_search = false;
@@ -1220,6 +1428,7 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         }
         // Automatic selection.
         if (!use_tree_search
+                && !use_benders_decomposition
                 && !use_local_search_linear_programming
                 && !use_local_search_nonlinear_programming
                 && !use_local_search_direct_trigonometry
@@ -1471,6 +1680,45 @@ packingsolver::irregular::Output packingsolver::irregular::optimize(
         auto context = task_context();
         tasks.push_back([&exception_ptr, &instance, context]() {
             wrapper<decltype(&optimize_column_generation), optimize_column_generation>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Benders decomposition.
+    if (use_benders_decomposition) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_benders_decomposition), optimize_benders_decomposition>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Tree search on relative positions.
+    if (use_tree_search_relative_positions) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_tree_search_relative_positions), optimize_tree_search_relative_positions>(
+                    exception_ptr,
+                    instance,
+                    *context.first,
+                    *context.second);
+        });
+    }
+    // Global nonlinear programming.
+    if (use_global_nonlinear_programming) {
+        exception_ptr_list.push_front(std::exception_ptr());
+        std::exception_ptr& exception_ptr = exception_ptr_list.front();
+        auto context = task_context();
+        tasks.push_back([&exception_ptr, &instance, context]() {
+            wrapper<decltype(&optimize_global_nonlinear_programming), optimize_global_nonlinear_programming>(
                     exception_ptr,
                     instance,
                     *context.first,

@@ -18,10 +18,9 @@ It is a constructive tree search where a single item is packed at each stage:
 * the children of a node are obtained by inserting one more item, at one of a few candidate positions, in the current (last) bin, or in a new bin if no item fits in the current bin anymore;
 * a node is a *leaf* when all the items are packed.
 
-The figure below shows a node (top), and its children inserting the items 4 and 5 (bottom). The item is always inserted as far to the left as possible, at a height given by the items already packed.
+The figure below shows a node (top), and its children inserting the items E (in both orientations) and F (bottom). The item is always inserted as far to the left as possible, at a height given by the items already packed.
 
-.. image:: ../../img/rectangle_tree_search.png
-   :scale: 100%
+.. image:: ../../img/rectangle_tree_search_children.svg
    :align: center
 
 The tree is far too large to be explored completely, so it is explored by an :ref:`iterative beam search <internals_tree_search>`: at each depth, only the nodes considered the most promising by a *guide* function are expanded, and the search is restarted with more and more nodes kept at each depth. Many nodes are also discarded because another node is at least as good (*dominance*), or because they can't lead to a better solution than the best one found (*bounds*).
@@ -49,7 +48,7 @@ Nodes
 
 In the following example, the items A, B, C and D are packed. A is not visible from the right anymore, since C covers it; B and D are only partly visible. The skyline (in red) has three bands:
 
-.. image:: ../../img/rectangle_tree_search_skyline.png
+.. image:: ../../img/rectangle_tree_search_skyline.svg
    :scale: 100%
    :align: center
 
@@ -86,13 +85,13 @@ The item is then pushed to the left: its x-coordinate is the largest right side 
 
 The figure below shows the candidate positions of an item E of size 3 × 2, in both orientations, in the node of the previous figure, and a candidate position of an item F of size 1 × 1 which doesn't rest on C:
 
-.. image:: ../../img/rectangle_tree_search_insertions.png
+.. image:: ../../img/rectangle_tree_search_insertions.svg
    :scale: 100%
    :align: center
 
 The defects of the bin are handled the same way: an item on the floor is pushed to the right of a defect it overlaps (left), and an item can rest on top of a defect (right):
 
-.. image:: ../../img/rectangle_tree_search_defects.png
+.. image:: ../../img/rectangle_tree_search_defects.svg
    :scale: 100%
    :align: center
 
@@ -109,7 +108,7 @@ The defects of the bin are handled the same way: an item on the floor is pushed 
 
 **Update of the skyline.** In the child, the bands of the skyline covered by the new item are replaced by a single band containing the new item, and the bands it partly covers are cut. In the figure below, E is inserted on top of C: it covers the bands of B and D entirely, which are replaced by its own band.
 
-.. image:: ../../img/rectangle_tree_search_child.png
+.. image:: ../../img/rectangle_tree_search_child.svg
    :scale: 100%
    :align: center
 
@@ -122,7 +121,7 @@ At each depth, the beam search keeps the nodes with the smallest *guide*. The gu
 
 **Waste.** The *waste* of a node is the area of the bins before the current one plus the area to the left of the skyline (in red on the right of the figure below), minus the area of the items packed. It is a lower bound of the waste of any solution containing this partial solution. It is increased to the area of the bins before the current one plus the area to the left of the rightmost item of the current bin, minus the area of all the items of the instance, if this is larger.
 
-.. image:: ../../img/rectangle_tree_search_guide_area.png
+.. image:: ../../img/rectangle_tree_search_guide_area.svg
    :scale: 100%
    :align: center
 
@@ -191,7 +190,7 @@ Two nodes with the same number of copies of each item type packed can be compare
 
 Every completion of node 2 is then also a completion of node 1, so node 2 can be discarded. In the following example, the same items A and C are packed in a different order. In node 2, C is packed after A and covers it, wasting the space above A. Node 1 dominates node 2.
 
-.. image:: ../../img/rectangle_tree_search_dominance.png
+.. image:: ../../img/rectangle_tree_search_dominance.svg
    :scale: 100%
    :align: center
 

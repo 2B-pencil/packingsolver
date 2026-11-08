@@ -22,8 +22,7 @@ When the items of a bin don't fit, *cuts* are added to the master problem, forbi
 
 In the example below, the bin has an area of 15, and the items 1, 2 and 3 have an area of 6, 6 and 3. At iteration 1, with no cuts yet, the master problem selects the three items, the only selection filling the area of the bin. This selection turns out to be infeasible: once items 1 and 2 are packed, there is no room left for item 3. A cut excluding this selection is added, and at iteration 2 the master problem selects items 1 and 2 only (area 12), which fit:
 
-.. image:: ../../img/rectangle_benders_decomposition.png
-   :scale: 100%
+.. image:: ../../img/rectangle_benders_decomposition_example.svg
    :align: center
 
 Master problem
@@ -34,42 +33,28 @@ The master problem is a :ref:`onedimensional <internals_onedimensional>` instanc
 * each bin type has its area as length, and keeps its copies, its cost and its resources;
 * each item type has its area as length, and keeps its copies and, for the :code:`knapsack` objective, its profit.
 
-It is solved with the :ref:`MILP assignment <internals_onedimensional_milp_assignment>` algorithm, in non-anytime mode.
+It is solved by the onedimensional solver, in non-anytime mode, with its :ref:`MILP assignment <internals_onedimensional_milp_assignment>` algorithm (or its :ref:`tree search <internals_onedimensional_tree_search>`, with the parameter :code:`master_problem_use_tree_search` of the algorithm), which supports all the features used below.
 
-The cuts, and the geometric information the master problem can't see by itself, are encoded as onedimensional *resources* on the bin types, so that the master problem never proposes a bin violating them. A resource of a bin type has a capacity, and each copy of an item type in a bin consumes a quantity of it. A cut forbidding "at least :math:`n` copies of item type :math:`i`" uses the consumption schedule :math:`(1, \ldots, 1, 0)` with :math:`n` ones: the copies of item type :math:`i` in a bin consume :math:`\min(c, n)` in total, where :math:`c` is their number.
+The geometric information the master problem can't see by itself, and the cuts, are expressed with the features of the onedimensional problem, so that the master problem never proposes a bin violating them. Most of them are *resources* of the bin types: a resource of a bin type has a capacity, and each copy of an item type in a bin consumes a quantity of it, given by a *consumption schedule*: the :math:`c`-th copy consumes the :math:`c`-th entry of the schedule, or its last entry beyond it. For example, with the schedule :math:`(1, \ldots, 1, 0)` with :math:`n` ones, the copies of an item type in a bin consume :math:`\min(c, n)` in total, where :math:`c` is their number: the resource counts the copies up to :math:`n`.
 
 The following information is computed before the first iteration:
 
-* **Eligibility.** An item type which doesn't fit a bin type by its dimensions (e.g. a 1 × 100 item in a 10 × 10 bin, although its area is small enough) is not eligible for it.
-* **Incompatible pairs.** Two rectangles in a rectangle can always be separated by a vertical or a horizontal line. So two items fit together in a bin if and only if they fit side by side or one above the other, in some orientations. For each pair of item types (and each item type with itself) which don't, a resource forbids them in the same bin.
-* **Precedences**, for the :code:`knapsack` objective only. An item type :math:`j` *dominates* an item type :math:`i` if its profit is at least the one of :math:`i`, if it fits in the footprint of :math:`i` in all the orientations of :math:`i`, and if it is eligible for all the bin types :math:`i` is eligible for. Then a copy of :math:`i` can always be replaced by a copy of :math:`j` if a copy of :math:`j` is left, without decreasing the profit. So no copy of :math:`i` is packed unless all the copies of :math:`j` are.
+* **Eligibility.** An item type which doesn't fit a bin type by its dimensions (e.g. a 1 × 100 item in a 10 × 10 bin, although its area is small enough) is not eligible for it, with the eligibilities of the onedimensional problem.
+* **Incompatible pairs.** Two rectangles in a rectangle can always be separated by a vertical or a horizontal line. So two items fit together in a bin if and only if they fit side by side or one above the other, in some orientations. For each pair of item types :math:`i` and :math:`i'` which don't, a resource of capacity 1 forbids them in the same bin: the copies of both item types consume :math:`(1, 0)`. When an item type doesn't fit with itself, its copies consume :math:`(1, 1, 0)`, so that two copies exceed the capacity.
+* **Precedences**, for the :code:`knapsack` objective only. An item type :math:`j` *dominates* an item type :math:`i` if its profit is at least the one of :math:`i`, if it fits in the footprint of :math:`i` in all the orientations of :math:`i`, and if it is eligible for all the bin types :math:`i` is eligible for. Then a copy of :math:`i` can always be replaced by a copy of :math:`j` if a copy of :math:`j` is left, without decreasing the profit. So no copy of :math:`i` is packed unless all the copies of :math:`j` are: :math:`j` is a predecessor of :math:`i`, with the item type precedences of the onedimensional problem.
 
-The model is the :ref:`MILP assignment <internals_onedimensional_milp_assignment>` model, where the length of an item or a bin is its area. With its variables :math:`x_{i,t,k,c}` (bin :math:`k` of type :math:`t` contains at least :math:`c` copies of item type :math:`i`), the number of copies of item type :math:`i` in a bin, counted up to :math:`n`, is :math:`\sum_{c \le n} x_{i,t,k,c}`, so all the cuts are linear. The following constraints are added for each bin :math:`(t, k)`:
+The cuts added during the iterations (see below) are resources of the bin type of the bin they were found for:
 
-* Incompatible pairs :math:`(i, i') \in \mathcal{I}_t`:
-
-.. math::
-
-   x_{i,t,k,1} + x_{i',t,k,1} \le 1 \qquad \text{(or } x_{i,t,k,2} \le 0 \text{ if } i = i' \text{)}
-
-* Dual feasible function cuts :math:`D \in \mathcal{D}_t`, with a coefficient :math:`f_i` for each item type and a right-hand side :math:`F`:
-
-.. math::
-
-   \sum_{i,c} f_i \, x_{i,t,k,c} \le F
-
-* Triplet and no-good cuts :math:`C \in \mathcal{C}_t`, each one forbidding :math:`n_i` copies of each item type :math:`i` of a set :math:`S`, with lifted item types :math:`L` of coefficients :math:`\alpha_j`:
-
-.. math::
-
-   \sum_{i \in S} \sum_{c \le n_i} x_{i,t,k,c} + \sum_{j \in L} \alpha_j \, x_{j,t,k,1} \le \sum_{i \in S} n_i - 1
+* a **dual feasible function cut**, with a coefficient :math:`f_i` for each item type and a right-hand side :math:`F`, is the resource of capacity :math:`F` where each copy of item type :math:`i` consumes :math:`f_i`;
+* a **triplet cut**, forbidding three items together, is the resource of capacity 2 where the copies of each item type of the triplet consume :math:`(1, \ldots, 1, 0)`, with as many ones as copies of this item type in the triplet;
+* a **no-good cut**, forbidding :math:`n_i` copies of each item type :math:`i` of a set :math:`S`, with lifted item types :math:`L` of coefficients :math:`\alpha_j`, is the resource of capacity :math:`\sum_{i \in S} n_i - 1` where the copies of item type :math:`i \in S` consume :math:`(1, \ldots, 1, 0)` with :math:`n_i` ones, and the copies of item type :math:`j \in L` consume :math:`(\alpha_j, 0)`: the first one consumes :math:`\alpha_j`, the other ones nothing.
 
 Iterations
 ----------
 
 At each iteration, the master problem is solved, then the bins of its solution are checked, from the cheapest checks to the most expensive ones. As soon as a check adds cuts, the master problem is solved again.
 
-.. image:: ../../img/rectangle_benders_decomposition_iteration.png
+.. image:: ../../img/rectangle_benders_decomposition_iteration.svg
    :scale: 100%
    :align: center
 
@@ -77,7 +62,7 @@ At each iteration, the master problem is solved, then the bins of its solution a
 2. **Dual feasible functions.** For each bin, the most violated inequality derived from the :ref:`dual feasible functions <internals_rectangle_dual_feasible_functions>` is searched. Such an inequality is valid for any selection of items in a bin of this type, so it is added as a permanent cut. If one is found for some bin, the master problem is solved again.
 3. **Incompatible triplets.** For each bin, the triplets of items of the bin which can never fit together are searched. Three rectangles are considered to fit together in a bin if and only if they fit in one of the 8 *guillotine arrangements* below, in some orientations: all three in a row, all three in a column, or two of them side by side (or one above the other) and the third one above them (or to their right). This was checked exhaustively against a search over the positions of the items, on tens of thousands of random cases; it doesn't hold for four items. If none of the 8 arrangements fits, the triplet is added as a permanent cut, forbidding these three items in a bin of this type. If one is found for some bin, the master problem is solved again.
 
-   .. image:: ../../img/rectangle_benders_decomposition_triplet_shapes.png
+   .. image:: ../../img/rectangle_benders_decomposition_triplet_shapes.svg
       :scale: 100%
       :align: center
 
@@ -97,7 +82,7 @@ The selections of at most 3 items are known to fit: the incompatible pairs and t
 
 In the example below, the selection *abcde* doesn't fit. Removing *a* gives *bcde*, which doesn't fit either; removing any further item of *bcde* gives a selection of 3 items, which fits, so *bcde* becomes a cut. In the same way, *abde* becomes a cut. The selections *acde*, *abce* and *abcd* fit.
 
-.. image:: ../../img/rectangle_benders_decomposition_minimal_subsets.png
+.. image:: ../../img/rectangle_benders_decomposition_minimal_subsets.svg
    :scale: 100%
    :align: center
 

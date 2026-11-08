@@ -31,6 +31,16 @@ struct Block
     std::vector<std::pair<ItemTypeId, ItemPos>> item_copies;
 
     /**
+     * Consumption of each resource of the bin type of the block, indexed by
+     * resource id, when the block is alone in the bin: the consumption of
+     * the copies of an item type in the block starts at the first entry of
+     * its schedule (see 'Resource::item_consumptions'). The blocks whose
+     * consumption exceeds the capacity of a resource which is not penalized
+     * are not generated. Empty iff the bin type has no resources.
+     */
+    std::vector<double> resource_consumption;
+
+    /**
      * Leaf block (is_simple = true): a cx×cy grid of one item type.
      * rect.w = cx * item_type.width(rotate) + (cx-1) * cut_thickness
      * rect.h = cy * item_type.height(rotate) + (cy-1) * cut_thickness
@@ -66,10 +76,8 @@ struct Block
     }
 };
 
-std::ostream& operator<<(std::ostream& os, const Block& block);
-
 /**
- * Parameters for compute_blocks().
+ * Parameters for 'compute_blocks'.
  */
 struct BlockParameters
 {
@@ -77,14 +85,48 @@ struct BlockParameters
     ItemPos maximum_number_of_blocks = 10000;
 };
 
+std::ostream& operator<<(std::ostream& os, const Block& block);
+
+/**
+ * Compute the consumption of each resource of a bin type by the items of a
+ * block alone in the bin; see 'Block::resource_consumption'.
+ */
+std::vector<double> compute_block_resource_consumption(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        const std::vector<std::pair<ItemTypeId, ItemPos>>& item_copies);
+
+/**
+ * Return true iff the consumption of a block doesn't exceed the capacity of
+ * a resource of its bin type which is not penalized.
+ */
+bool block_resource_feasible(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        const Block& block);
+
+/**
+ * Generate the simple blocks of an item type for a bin type: the grids of
+ * copies of the item type, in each of its orientations, which fit in the
+ * bin and don't exceed the capacity of a resource which is not penalized.
+ */
+std::vector<Block> compute_simple_blocks(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        ItemTypeId item_type_id);
+
 /**
  * Generate guillotine blocks for each bin type of the instance.
  *
  * Returns one vector of blocks per bin type (indexed by BinTypeId).
+ *
+ * If 'end' is not 'nullptr' and becomes true, the generation stops and the
+ * blocks returned are incomplete.
  */
 std::vector<std::vector<Block>> compute_blocks(
         const Instance& instance,
-        const BlockParameters& parameters = {});
+        const BlockParameters& parameters = {},
+        const bool* end = nullptr);
 
 } // namespace rectangleguillotine
 } // namespace packingsolver

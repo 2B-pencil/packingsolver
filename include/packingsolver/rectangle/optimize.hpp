@@ -223,6 +223,14 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
      */
     bool use_benders_decomposition_contiguity = false;
 
+    /**
+     * Use the tree search on packing classes (see
+     * 'tree_search_packing_classes.hpp'). Only supported for the
+     * 'Feasibility' objective, on an instance with a single bin type used
+     * exactly once, without defects, fixed items and unloading constraints.
+     */
+    bool use_tree_search_packing_classes = false;
+
     /** Guides used in the tree search algorithm. */
     std::vector<GuideId> tree_search_guides;
 
@@ -271,6 +279,24 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     NodeId sequential_value_correction_subproblem_tree_search_maximal_spaces_queue_size = 16;
 
     /**
+     * For VariableSizedBinPacking, in the sequential value correction and the
+     * sequential single knapsack algorithms, restrict the bin types tried at
+     * each step to the ones in which the remaining item type which fits in
+     * the smallest number of available bins fits (see
+     * 'SequentialValueCorrectionParameters::restrict_bin_types').
+     */
+    bool sequential_value_correction_restrict_bin_types = true;
+
+    /**
+     * For VariableSizedBinPacking, in the sequential value correction and the
+     * sequential single knapsack algorithms, exponent of the factor applied
+     * to the initial profit of the item types which compete for scarce bins
+     * (see 'SequentialValueCorrectionParameters::
+     * scarce_item_types_profit_factor_exponent'). 0 disables it.
+     */
+    double sequential_value_correction_scarce_item_types_profit_factor_exponent = 1.0;
+
+    /**
      * Size of the queue in the tree search algorithm for the pricing knapsack subproblem of
      * the column generation algorithm.
      */
@@ -287,6 +313,25 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
      * the Benders decomposition algorithm.
      */
     NodeId benders_decomposition_subproblem_tree_search_queue_size = 128;
+
+    /**
+     * Use the contiguity-master Benders decomposition to solve the
+     * feasibility subproblems of the Benders decomposition algorithm.
+     *
+     * If neither this nor
+     * 'benders_decomposition_subproblem_use_tree_search_packing_classes' is
+     * set, the algorithms solving the subproblems are selected automatically.
+     * Otherwise, the subproblems are solved by the tree search, to find the
+     * packings of the feasible subproblems, and by the selected algorithms.
+     */
+    bool benders_decomposition_subproblem_use_benders_decomposition_contiguity = false;
+
+    /**
+     * Use the tree search on packing classes to solve the feasibility
+     * subproblems of the Benders decomposition algorithm; see
+     * 'benders_decomposition_subproblem_use_benders_decomposition_contiguity'.
+     */
+    bool benders_decomposition_subproblem_use_tree_search_packing_classes = false;
 
     /*
      * Parameters for non-anytime mode

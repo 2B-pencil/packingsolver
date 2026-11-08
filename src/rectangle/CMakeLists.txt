@@ -15,13 +15,15 @@ target_sources(PackingSolver_rectangle PRIVATE
     item_subset_incompatibility.cpp
     onedimentional_contiguity/milp.cpp
     onedimentional_contiguity/tree_search.cpp
+    onedimentional_contiguity/sweep.cpp
     dual_feasible_functions.cpp
     conservative_scales.cpp
     bar_relaxation.cpp
     reduction.cpp
     block.cpp
     sequential_feasibility.cpp
-    tree_search_maximal_spaces.cpp)
+    tree_search_maximal_spaces.cpp
+    tree_search_packing_classes.cpp)
 target_include_directories(PackingSolver_rectangle PUBLIC
     ${PROJECT_SOURCE_DIR}/include)
 target_include_directories(PackingSolver_rectangle PRIVATE

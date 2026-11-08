@@ -138,10 +138,21 @@ void InstanceBuilder::add_resource_consumption(
     bin_type.resources[resource_id].item_consumptions.push_back({item_type_id, schedule});
 }
 
-BinTypeId InstanceBuilder::add_bin_type(
-        const Instance& original_instance,
+const Instance& InstanceBuilder::original_instance() const
+{
+    if (original_instance_ == nullptr) {
+        throw std::logic_error(
+                FUNC_SIGNATURE + ": "
+                "the original instance must be set with "
+                "'set_original_instance'.");
+    }
+    return *original_instance_;
+}
+
+BinTypeId InstanceBuilder::add_bin_type_from_original_instance(
         BinTypeId original_bin_type_id)
 {
+    const Instance& original_instance = this->original_instance();
     const BinType& bin_type = original_instance.bin_type(original_bin_type_id);
     BinTypeId bin_type_id = add_bin_type(bin_type.length);
     if ((BinTypeId)orig_to_sub_bin_type_ids_.size() <= original_bin_type_id)
@@ -171,6 +182,30 @@ BinTypeId InstanceBuilder::add_bin_type(
                 resource.penalty);
     }
     return bin_type_id;
+}
+
+void InstanceBuilder::crop_bin_type(
+        BinTypeId bin_type_id,
+        Length length)
+{
+    if (bin_type_id < 0 || bin_type_id >= (BinTypeId)instance_.bin_types_.size()) {
+        throw std::invalid_argument(
+                FUNC_SIGNATURE + ": "
+                "invalid 'bin_type_id'; "
+                "bin_type_id: " + std::to_string(bin_type_id) + "; "
+                "instance_.bin_types_.size(): " + std::to_string(instance_.bin_types_.size()) + ".");
+    }
+
+    BinType& bin_type = instance_.bin_types_[bin_type_id];
+    if (length <= 0 || length > bin_type.length) {
+        throw std::invalid_argument(
+                FUNC_SIGNATURE + ": "
+                "requires '0 < length <= bin_type.length'; "
+                "length: " + std::to_string(length) + "; "
+                "bin_type.length: " + std::to_string(bin_type.length) + ".");
+    }
+
+    bin_type.length = length;
 }
 
 void InstanceBuilder::set_bin_type_copies(
@@ -394,10 +429,10 @@ void InstanceBuilder::add_item_type_precedence(
     instance_.item_types_[dominating_item_type_id].dominating_precedence_ids.push_back(precedence_id);
 }
 
-ItemTypeId InstanceBuilder::add_item_type(
-        const Instance& original_instance,
+ItemTypeId InstanceBuilder::add_item_type_from_original_instance(
         ItemTypeId original_item_type_id)
 {
+    const Instance& original_instance = this->original_instance();
     const ItemType& item_type = original_instance.item_type(original_item_type_id);
     ItemTypeId item_type_id = add_item_type(item_type.length);
     if ((ItemTypeId)orig_to_sub_item_type_ids_.size() <= original_item_type_id)
@@ -422,7 +457,7 @@ ItemTypeId InstanceBuilder::add_item_type(
             item_type.eligibility_id);
     // Copy the consumption of this item type for the resources of
     // already-added bin types. Assumes the relevant bin types have already
-    // been added via 'add_bin_type(original_instance, ...)'.
+    // been added via 'add_bin_type_from_original_instance'.
     for (BinTypeId original_bin_type_id = 0;
             original_bin_type_id < (BinTypeId)orig_to_sub_bin_type_ids_.size();
             ++original_bin_type_id) {

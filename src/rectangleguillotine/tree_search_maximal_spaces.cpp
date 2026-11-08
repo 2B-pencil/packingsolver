@@ -27,7 +27,64 @@ BranchingSchemeMaximalSpaces::BranchingSchemeMaximalSpaces(
     cut_thickness_ = instance_.parameters().cut_thickness;
     BinTypeId bin_type_id = instance_.bin_type_id(0);
     const BinType& bin_type = instance_.bin_type(bin_type_id);
-    bin_rect_ = {bin_type.rect.w, bin_type.rect.h};
+    x_start_ = instance_.x_start(bin_type);
+    y_start_ = instance_.y_start(bin_type);
+    bin_rect_ = {
+        bin_type.rect.w - bin_type.right_trim - x_start_,
+        bin_type.rect.h - bin_type.top_trim - y_start_};
+
+    // Resources.
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type.number_of_resources();
+            ++resource_id) {
+        if (!bin_type.resource(resource_id).penalize)
+            has_hard_resources_ = true;
+    }
+}
+
+bool BranchingSchemeMaximalSpaces::block_resource_feasible(
+        const Node& node,
+        const Block& block) const
+{
+    if (!has_hard_resources_)
+        return true;
+    const BinType& bin_type = instance_.bin_type(instance_.bin_type_id(0));
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type.number_of_resources();
+            ++resource_id) {
+        const Resource& resource = bin_type.resource(resource_id);
+        if (resource.penalize)
+            continue;
+        if (node.resource_consumption[resource_id]
+                + block.resource_consumption[resource_id]
+                > resource.capacity) {
+            return false;
+        }
+    }
+    return true;
+}
+
+Profit BranchingSchemeMaximalSpaces::insertion_profit(
+        const Node& node,
+        const Block& block) const
+{
+    Profit profit = block.item_profit;
+    const BinType& bin_type = instance_.bin_type(instance_.bin_type_id(0));
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type.number_of_resources();
+            ++resource_id) {
+        const Resource& resource = bin_type.resource(resource_id);
+        if (!resource.penalize)
+            continue;
+        double previous_consumption = node.resource_consumption[resource_id];
+        if (previous_consumption > resource.capacity)
+            continue;
+        if (previous_consumption + block.resource_consumption[resource_id]
+                > resource.capacity) {
+            profit -= resource.penalty;
+        }
+    }
+    return profit;
 }
 
 bool BranchingSchemeMaximalSpaces::cut_is_vertical(
@@ -69,7 +126,7 @@ BranchingSchemeMaximalSpaces::root() const
     node->item_number_of_copies.assign(instance_.number_of_item_types(), 0);
 
     EmptySpace root_space;
-    root_space.bl_corner = {0, 0};
+    root_space.bl_corner = {x_start_, y_start_};
     root_space.width = bin_rect_.w;
     root_space.height = bin_rect_.h;
     root_space.depth = 0;
@@ -77,6 +134,9 @@ BranchingSchemeMaximalSpaces::root() const
     node->empty_spaces.push_back(root_space);
 
     BinTypeId bin_type_id = instance_.bin_type_id(0);
+    node->resource_consumption.assign(instance_.bin_type(bin_type_id).number_of_resources(), 0.0);
+    // The blocks which exceed the capacity of a resource which is not
+    // penalized are not generated.
     node->valid_block_ids.resize(blocks_[bin_type_id].size());
     std::iota(node->valid_block_ids.begin(), node->valid_block_ids.end(), (ItemPos)0);
 
@@ -106,7 +166,7 @@ BranchingSchemeMaximalSpaces::insertions(
         if (block.rect.w > space.width || block.rect.h > space.height)
             continue;
         double guide = (space.area() > 0)?
-            (double)block.item_profit / space.area():
+            (double)insertion_profit(*parent, block) / space.area():
             0.0;
         {
             Insertion ins;
@@ -166,7 +226,7 @@ BranchingSchemeMaximalSpaces::best_insertion(Node& node) const
         if (block.rect.w > space.width || block.rect.h > space.height)
             continue;
         double guide = (space.area() > 0)?
-            (double)block.item_profit / space.area():
+            (double)insertion_profit(node, block) / space.area():
             0.0;
         if (guide > best_guide) {
             best_guide = guide;
@@ -199,12 +259,20 @@ void BranchingSchemeMaximalSpaces::apply_insertion(
     pb.cut_orientation = co;
     node.placed_blocks.push_back(pb);
 
-    // Update item counts and profit.
+    // Update the profit before the resource consumptions: the penalties
+    // depend on the previous consumptions.
+    node.profit += insertion_profit(node, block);
+    for (ResourceId resource_id = 0;
+            resource_id < (ResourceId)node.resource_consumption.size();
+            ++resource_id) {
+        node.resource_consumption[resource_id] += block.resource_consumption[resource_id];
+    }
+
+    // Update item counts.
     for (const std::pair<ItemTypeId, ItemPos>& item_copy: block.item_copies) {
         node.item_number_of_copies[item_copy.first] += item_copy.second;
     }
     node.item_area += block.item_area;
-    node.profit += block.item_profit;
     node.number_of_items += block.number_of_items;
     node.number_of_blocks++;
     node.id = node_id_++;
@@ -272,6 +340,10 @@ void BranchingSchemeMaximalSpaces::apply_insertion(
                 break;
             }
         }
+        // The consumptions only increase: a block which exceeds the capacity
+        // of a resource which is not penalized can't be placed anymore.
+        if (valid && !block_resource_feasible(node, candidate))
+            valid = false;
         if (valid)
             new_valid.push_back(block_id);
     }
@@ -414,12 +486,15 @@ Solution BranchingSchemeMaximalSpaces::to_solution(
     };
     std::vector<CutNode> cut_nodes;
 
-    // Root covers the full bin.
+    // Root covers the bin without its hard trims, like the depth-0 node of
+    // SolutionBuilder::add_bin.
     {
         CutNode root;
         root.depth = 0;
-        root.l = 0; root.r = bin_type.rect.w;
-        root.b = 0; root.t = bin_type.rect.h;
+        root.l = (bin_type.left_trim_type == TrimType::Hard)? bin_type.left_trim: 0;
+        root.r = bin_type.rect.w - ((bin_type.right_trim_type == TrimType::Hard)? bin_type.right_trim: 0);
+        root.b = (bin_type.bottom_trim_type == TrimType::Hard)? bin_type.bottom_trim: 0;
+        root.t = bin_type.rect.h - ((bin_type.top_trim_type == TrimType::Hard)? bin_type.top_trim: 0);
         cut_nodes.push_back(root);
     }
 
@@ -623,7 +698,7 @@ Solution BranchingSchemeMaximalSpaces::to_solution(
     std::vector<UrsEntry> urs_list;
     {
         EmptySpace root_space;
-        root_space.bl_corner = {0, 0};
+        root_space.bl_corner = {x_start_, y_start_};
         root_space.width  = bin_rect_.w;
         root_space.height = bin_rect_.h;
         root_space.depth  = 0;
@@ -781,23 +856,49 @@ Solution BranchingSchemeMaximalSpaces::to_solution(
     SolutionBuilder solution_builder(instance_);
     solution_builder.add_bin(bin_type_id, 1, fco);
 
-    std::function<void(ItemPos)> dfs = [&](ItemPos node_idx) {
+    // 'l' and 'b' are the coordinates of the bottom-left corner of the node
+    // as built by SolutionBuilder. They differ from those of the cut node
+    // inside soft left and bottom trims: the first child of such a node is
+    // then preceded by a waste node, separated from it by a cut.
+    std::function<void(ItemPos, Length, Length)> dfs = [&](
+            ItemPos node_idx,
+            Length l,
+            Length b)
+    {
         const CutNode& node = cut_nodes[node_idx];
-        if (node.depth > 0) {
-            bool node_is_vertical = (
-                (fco == CutOrientation::Vertical  && node.depth % 2 == 1)
-                || (fco == CutOrientation::Horizontal && node.depth % 2 == 0));
-            Length cut_pos = node_is_vertical ? node.r : node.t;
-            solution_builder.add_node(node.depth, cut_pos);
-            if (node.item_type_id >= 0) {
-                solution_builder.set_last_node_item(node.item_type_id);
-                return;
-            }
+        if (node.item_type_id >= 0) {
+            solution_builder.set_last_node_item(node.item_type_id);
+            return;
         }
-        for (ItemPos child_idx: node.children)
-            dfs(child_idx);
+        Depth child_depth = node.depth + 1;
+        bool child_is_vertical = (
+            (fco == CutOrientation::Vertical  && child_depth % 2 == 1)
+            || (fco == CutOrientation::Horizontal && child_depth % 2 == 0));
+        Length position = child_is_vertical? l: b;
+        for (ItemPos child_idx: node.children) {
+            const CutNode& child = cut_nodes[child_idx];
+            Length child_start = child_is_vertical? child.l: child.b;
+            if (child_start > position) {
+                if (child_start - cut_thickness_ <= position) {
+                    throw std::logic_error(
+                            FUNC_SIGNATURE + ": "
+                            "gap too small for a waste node; "
+                            "position: " + std::to_string(position) + "; "
+                            "child_start: " + std::to_string(child_start) + ".");
+                }
+                solution_builder.add_node(child_depth, child_start - cut_thickness_);
+            }
+            Length cut_pos = child_is_vertical? child.r: child.t;
+            solution_builder.add_node(child_depth, cut_pos);
+            if (child_is_vertical) {
+                dfs(child_idx, child_start, b);
+            } else {
+                dfs(child_idx, l, child_start);
+            }
+            position = cut_pos + cut_thickness_;
+        }
     };
-    dfs(0);
+    dfs(0, cut_nodes[0].l, cut_nodes[0].b);
 
     Solution solution = solution_builder.build();
 
@@ -877,7 +978,13 @@ const packingsolver::rectangleguillotine::TreeSearchMaximalSpacesOutput packings
     algorithm_formatter.start();
     algorithm_formatter.print_header();
 
-    std::vector<std::vector<Block>> all_blocks = compute_blocks(instance);
+    const std::vector<std::vector<Block>>* blocks
+        = instance.get_blocks(algorithm_formatter.end_boolean());
+    if (blocks == nullptr) {
+        algorithm_formatter.end();
+        return output;
+    }
+    const std::vector<std::vector<Block>>& all_blocks = *blocks;
 
     BranchingSchemeMaximalSpaces::Parameters branching_scheme_parameters;
     branching_scheme_parameters.first_cut_orientation

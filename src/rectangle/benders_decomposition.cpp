@@ -98,6 +98,34 @@ enum class SelectionFeasibility
 };
 
 /**
+ * Parameters of the 'optimize' call solving a feasibility subproblem.
+ */
+OptimizeParameters subproblem_parameters(
+        const BendersDecompositionParameters& parameters)
+{
+    OptimizeParameters sub_parameters;
+    sub_parameters.verbosity_level = 0;
+    sub_parameters.timer = parameters.timer;
+    sub_parameters.optimization_mode
+        = (parameters.optimization_mode == OptimizationMode::Exact)?
+        OptimizationMode::Exact:
+        (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
+        OptimizationMode::NotAnytimeSequential:
+        OptimizationMode::NotAnytimeDeterministic;
+    sub_parameters.not_anytime_tree_search_queue_size = parameters.subproblem_queue_size;
+    sub_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    if (parameters.subproblem_use_benders_decomposition_contiguity
+            || parameters.subproblem_use_tree_search_packing_classes) {
+        sub_parameters.use_tree_search = true;
+        sub_parameters.use_benders_decomposition_contiguity
+            = parameters.subproblem_use_benders_decomposition_contiguity;
+        sub_parameters.use_tree_search_packing_classes
+            = parameters.subproblem_use_tree_search_packing_classes;
+    }
+    return sub_parameters;
+}
+
+/**
  * Check whether 'selected_items' (copies of item types, possibly zero for
  * some) all fit together in a single bin of the given type; see
  * 'SelectionFeasibility'.
@@ -111,7 +139,8 @@ SelectionFeasibility selection_feasibility(
     InstanceBuilder sub_instance_builder;
     sub_instance_builder.set_objective(Objective::Feasibility);
     sub_instance_builder.set_parameters(instance.parameters());
-    BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type(instance, bin_type_id);
+    sub_instance_builder.set_original_instance(instance);
+    BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type_from_original_instance(bin_type_id);
     sub_instance_builder.set_bin_type_copies(sub_bin_type_id, 1);
     sub_instance_builder.set_bin_type_copies_min(sub_bin_type_id, 0);
     bool any_items = false;
@@ -119,24 +148,14 @@ SelectionFeasibility selection_feasibility(
         if (p.second <= 0)
             continue;
         any_items = true;
-        ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type(instance, p.first);
+        ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type_from_original_instance(p.first);
         sub_instance_builder.set_item_type_copies(sub_item_type_id, p.second);
     }
     if (!any_items)
         return SelectionFeasibility::Feasible;
     Instance sub_instance = sub_instance_builder.build();
 
-    OptimizeParameters sub_parameters;
-    sub_parameters.verbosity_level = 0;
-    sub_parameters.timer = parameters.timer;
-    sub_parameters.optimization_mode
-        = (parameters.optimization_mode == OptimizationMode::Exact)?
-        OptimizationMode::Exact:
-        (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
-        OptimizationMode::NotAnytimeSequential:
-        OptimizationMode::NotAnytimeDeterministic;
-    sub_parameters.not_anytime_tree_search_queue_size = parameters.subproblem_queue_size;
-    sub_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    OptimizeParameters sub_parameters = subproblem_parameters(parameters);
     auto sub_output = optimize(sub_instance, sub_parameters);
     if (sub_output.solution_pool.best().feasible())
         return SelectionFeasibility::Feasible;
@@ -747,18 +766,19 @@ ResourceCut packingsolver::rectangle::lift_no_good_cut(
         InstanceBuilder sub_instance_builder;
         sub_instance_builder.set_objective(Objective::Knapsack);
         sub_instance_builder.set_parameters(instance.parameters());
-        BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type(instance, bin_type_id);
+        sub_instance_builder.set_original_instance(instance);
+        BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type_from_original_instance(bin_type_id);
         sub_instance_builder.set_bin_type_copies(sub_bin_type_id, 1);
         sub_instance_builder.set_bin_type_copies_min(sub_bin_type_id, 0);
         for (const SEntry& s_entry: s_entries) {
-            ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type(instance, s_entry.item_type_id);
+            ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type_from_original_instance(s_entry.item_type_id);
             sub_instance_builder.set_item_type_profit(sub_item_type_id, s_entry.profit);
             sub_instance_builder.set_item_type_copies(sub_item_type_id, s_entry.copies);
         }
         // j* forced into exactly 1 copy via 'copies_min', at profit 0 (see
         // the function-level comment above for why a profit incentive
         // cannot substitute for this).
-        ItemTypeId sub_candidate_id = sub_instance_builder.add_item_type(instance, candidate_id);
+        ItemTypeId sub_candidate_id = sub_instance_builder.add_item_type_from_original_instance(candidate_id);
         sub_instance_builder.set_item_type_profit(sub_candidate_id, 0.0);
         sub_instance_builder.set_item_type_copies(sub_candidate_id, 1);
         sub_instance_builder.set_item_type_copies_min(sub_candidate_id, 1);
@@ -1092,30 +1112,20 @@ BendersDecompositionOutput packingsolver::rectangle::benders_decomposition(
             InstanceBuilder sub_instance_builder;
             sub_instance_builder.set_objective(Objective::Feasibility);
             sub_instance_builder.set_parameters(instance.parameters());
-            BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type(
-                    instance, master_bin.bin_type_id);
+            sub_instance_builder.set_original_instance(instance);
+            BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type_from_original_instance(master_bin.bin_type_id);
             sub_instance_builder.set_bin_type_copies(sub_bin_type_id, 1);
             sub_instance_builder.set_bin_type_copies_min(sub_bin_type_id, 0);
             std::vector<ItemTypeId> sub_to_orig;
             for (const std::pair<ItemTypeId, ItemPos>& p: selected_items) {
-                ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type(instance, p.first);
+                ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type_from_original_instance(p.first);
                 sub_instance_builder.set_item_type_copies(sub_item_type_id, p.second);
                 sub_to_orig.push_back(p.first);
             }
             Instance sub_instance = sub_instance_builder.build();
 
             // Solve.
-            OptimizeParameters sub_parameters;
-            sub_parameters.verbosity_level = 0;
-            sub_parameters.timer = parameters.timer;
-            sub_parameters.optimization_mode
-                = (parameters.optimization_mode == OptimizationMode::Exact)?
-                OptimizationMode::Exact:
-                (parameters.optimization_mode == OptimizationMode::NotAnytimeSequential)?
-                OptimizationMode::NotAnytimeSequential:
-                OptimizationMode::NotAnytimeDeterministic;
-            sub_parameters.not_anytime_tree_search_queue_size = parameters.subproblem_queue_size;
-            sub_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+            OptimizeParameters sub_parameters = subproblem_parameters(parameters);
             auto subproblem_begin = std::chrono::steady_clock::now();
             auto sub_output = optimize(sub_instance, sub_parameters);
             auto subproblem_end = std::chrono::steady_clock::now();

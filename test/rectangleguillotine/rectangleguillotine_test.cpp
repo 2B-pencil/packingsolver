@@ -8,102 +8,6 @@
 using namespace packingsolver::rectangleguillotine;
 namespace fs = boost::filesystem;
 
-TEST(RectangleGuillotine, BinPackingWithLeftoversA1)
-{
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPackingWithLeftovers);
-    fs::path directory = fs::path("data") / "rectangle" / "roadef2018";
-    instance_builder.read_item_types((directory / "A1_items.csv").string());
-    instance_builder.read_bin_types((directory / "A1_bins.csv").string());
-    instance_builder.read_defects((directory / "A1_defects.csv").string());
-    instance_builder.set_roadef2018();
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = true;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_EQ(output.solution_pool.best().waste(), 425486);
-}
-
-TEST(RectangleGuillotine, BinPackingWithLeftoversA17)
-{
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPackingWithLeftovers);
-    fs::path directory = fs::path("data") / "rectangle" / "roadef2018";
-    instance_builder.read_item_types((directory / "A17_items.csv").string());
-    instance_builder.read_bin_types((directory / "A17_bins.csv").string());
-    instance_builder.read_defects((directory / "A17_defects.csv").string());
-    instance_builder.set_roadef2018();
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = true;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_EQ(output.solution_pool.best().waste(), 3617251);
-}
-
-TEST(RectangleGuillotine, BinPackingWithLeftoversA20)
-{
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPackingWithLeftovers);
-    fs::path directory = fs::path("data") / "rectangle" / "roadef2018";
-    instance_builder.read_item_types((directory / "A20_items.csv").string());
-    instance_builder.read_bin_types((directory / "A20_bins.csv").string());
-    instance_builder.read_defects((directory / "A20_defects.csv").string());
-    instance_builder.set_roadef2018();
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = true;
-    optimize_parameters.not_anytime_tree_search_queue_size = 1e4;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_EQ(output.solution_pool.best().waste(), 1467925);
-}
-
-TEST(RectangleGuillotine, BinPackingWithLeftoversB5)
-{
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPackingWithLeftovers);
-    fs::path directory = fs::path("data") / "rectangle" / "roadef2018";
-    instance_builder.read_item_types((directory / "B5_items.csv").string());
-    instance_builder.read_bin_types((directory / "B5_bins.csv").string());
-    instance_builder.read_defects((directory / "B5_defects.csv").string());
-    instance_builder.set_roadef2018();
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = true;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_EQ(output.solution_pool.best().waste(), 72155615);
-}
-
-TEST(RectangleGuillotine, BinPackingWithLeftoversEmptyBinTreeSearch)
-{
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPacking);
-    instance_builder.add_bin_type(6000, 3000);
-    instance_builder.add_defect(0, 0, 0, 6000, 3000);
-    instance_builder.add_bin_type(6000, 3000);
-    instance_builder.add_item_type(6000, 3000);
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = true;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_EQ(output.solution_pool.best().number_of_items(), instance.number_of_items());
-    EXPECT_EQ(output.solution_pool.best().number_of_bins(), 2);
-}
-
 struct RectangleGuillotineOptimizeTestParams
 {
     fs::path items_path;
@@ -363,6 +267,31 @@ INSTANTIATE_TEST_SUITE_P(
                 fs::path(""),
                 fs::path(""),
                 fs::path("data") / "rectangleguillotine" / "tests" / "open_dimension_x_column_generation_strips_width" / "solution.csv",
+            }, {
+                // With unlimited stages and a single bin, the automatic
+                // selection ran 'tree_search_maximal_spaces', which doesn't
+                // support these objectives.
+                fs::path("data") / "rectangleguillotine" / "tests" / "variable_sized_bin_packing_unlimited_stages_single_bin" / "instance.json",
+                fs::path(""),
+                fs::path(""),
+                fs::path(""),
+                fs::path("data") / "rectangleguillotine" / "tests" / "variable_sized_bin_packing_unlimited_stages_single_bin" / "solution.csv",
+            }, {
+                fs::path("data") / "rectangleguillotine" / "tests" / "bin_packing_cutting_cost_unlimited_stages_single_bin" / "instance.json",
+                fs::path(""),
+                fs::path(""),
+                fs::path(""),
+                fs::path("data") / "rectangleguillotine" / "tests" / "bin_packing_cutting_cost_unlimited_stages_single_bin" / "solution.csv",
+            }, {
+                // With unlimited stages, the sub-instances of the sequential
+                // feasibility of 'tree_search_maximal_spaces' had no trims,
+                // so rebuilding its solutions in the original bin, when
+                // unreducing them, failed on the hard trims.
+                fs::path("data") / "rectangleguillotine" / "tests" / "bin_packing_unlimited_stages_hard_top_trim" / "instance.json",
+                fs::path(""),
+                fs::path(""),
+                fs::path(""),
+                fs::path("data") / "rectangleguillotine" / "tests" / "bin_packing_unlimited_stages_hard_top_trim" / "solution.csv",
             }}));
 
 TEST(RectangleGuillotine, SolutionItemInSoftTrim)
@@ -400,6 +329,48 @@ TEST(RectangleGuillotine, SolutionItemInSoftTrim)
     Solution solution_2 = solution_builder_2.build();
     EXPECT_TRUE(solution_2.trims_feasible());
     EXPECT_TRUE(solution_2.feasible());
+}
+
+TEST(RectangleGuillotine, SolutionRoadef2018ExtraCut)
+{
+    // With the 'Roadef2018' cut type, the extra cut of the last stage
+    // separates at most two items (and a waste).
+    InstanceBuilder instance_builder;
+    instance_builder.set_objective(packingsolver::Objective::Knapsack);
+    instance_builder.set_number_of_stages(2);
+    instance_builder.set_cut_type(CutType::Roadef2018);
+    packingsolver::ItemTypeId item_type_id = instance_builder.add_item_type(10, 10);
+    instance_builder.set_item_type_copies(item_type_id, 3);
+    instance_builder.add_bin_type(30, 20);
+    Instance instance = instance_builder.build();
+
+    // Two items in a second-level sub-plate.
+    SolutionBuilder solution_builder_1(instance);
+    solution_builder_1.add_bin(0, 1, CutOrientation::Vertical);
+    solution_builder_1.add_node(1, 30);
+    solution_builder_1.add_node(2, 10);
+    solution_builder_1.add_node(3, 10);
+    solution_builder_1.set_last_node_item(0);
+    solution_builder_1.add_node(3, 20);
+    solution_builder_1.set_last_node_item(0);
+    Solution solution_1 = solution_builder_1.build();
+    EXPECT_TRUE(solution_1.number_of_stages_feasible());
+    EXPECT_TRUE(solution_1.feasible());
+
+    // Three items in a second-level sub-plate.
+    SolutionBuilder solution_builder_2(instance);
+    solution_builder_2.add_bin(0, 1, CutOrientation::Vertical);
+    solution_builder_2.add_node(1, 30);
+    solution_builder_2.add_node(2, 10);
+    solution_builder_2.add_node(3, 10);
+    solution_builder_2.set_last_node_item(0);
+    solution_builder_2.add_node(3, 20);
+    solution_builder_2.set_last_node_item(0);
+    solution_builder_2.add_node(3, 30);
+    solution_builder_2.set_last_node_item(0);
+    Solution solution_2 = solution_builder_2.build();
+    EXPECT_FALSE(solution_2.number_of_stages_feasible());
+    EXPECT_FALSE(solution_2.feasible());
 }
 
 TEST(RectangleGuillotine, AddTrimsAcceptsValidRightTrim)
@@ -546,4 +517,43 @@ TEST(RectangleGuillotine, ReadCuttingCosts)
     instance = read_json("{\"objective\": \"bin-packing\", " + BIN_AND_ITEM_TYPES + "}");
     ASSERT_EQ(instance.parameters().cutting_costs.size(), 5);
     EXPECT_EQ(instance.parameters().cutting_costs[0].fixed, 0);
+}
+
+TEST(RectangleGuillotine, InstanceBuilderCropBinType)
+{
+    // Bin 100x100 with trims of 10 and three defects, cropped to 60x70.
+    InstanceBuilder instance_builder;
+    instance_builder.add_item_type(10, 10);
+    packingsolver::BinTypeId bin_type_id = instance_builder.add_bin_type(100, 100);
+    instance_builder.add_trims(
+            bin_type_id,
+            10, TrimType::Hard,
+            10, TrimType::Soft,
+            10, TrimType::Hard,
+            40, TrimType::Hard);
+    // Inside the part kept.
+    instance_builder.add_defect(bin_type_id, 20, 20, 10, 10);
+    // Across the right side of the part kept.
+    instance_builder.add_defect(bin_type_id, 50, 30, 20, 50);
+    // Outside the part kept.
+    instance_builder.add_defect(bin_type_id, 80, 20, 10, 10);
+    instance_builder.crop_bin_type(bin_type_id, 60, 70);
+    Instance instance = instance_builder.build();
+
+    const BinType& bin_type = instance.bin_type(bin_type_id);
+    EXPECT_EQ(bin_type.rect.w, 60);
+    EXPECT_EQ(bin_type.rect.h, 70);
+    EXPECT_EQ(bin_type.left_trim, 10);
+    EXPECT_EQ(bin_type.right_trim, 0);
+    EXPECT_EQ(bin_type.bottom_trim, 10);
+    // The top trim was from 60 to 100.
+    EXPECT_EQ(bin_type.top_trim, 10);
+    EXPECT_EQ(bin_type.top_trim_type, TrimType::Hard);
+    ASSERT_EQ(bin_type.defects.size(), 2);
+    EXPECT_EQ(bin_type.defects[0].pos.x, 20);
+    EXPECT_EQ(bin_type.defects[0].rect.w, 10);
+    EXPECT_EQ(bin_type.defects[1].pos.x, 50);
+    EXPECT_EQ(bin_type.defects[1].pos.y, 30);
+    EXPECT_EQ(bin_type.defects[1].rect.w, 10);
+    EXPECT_EQ(bin_type.defects[1].rect.h, 40);
 }

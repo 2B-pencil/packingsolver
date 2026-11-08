@@ -226,6 +226,15 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     Area tree_search_hypergraph_infinite_copies_maximum_bin_area = 10000000;
 
     /**
+     * Maximum number of states of the hypergraph of an instance for which
+     * the 'tree_search_hypergraph' algorithm is used, automatically in
+     * 'Exact' mode for the 'Knapsack' and 'Feasibility' objectives with a
+     * single bin, and for the 'PricingType::Dual' calls of the pricing of
+     * the column generation.
+     */
+    Counter tree_search_hypergraph_maximum_number_of_states = 1 << 22;
+
+    /**
      * Size of the queue in the tree search algorithm for the pricing knapsack subproblem of
      * the sequential value correction algorithm.
      */
@@ -236,6 +245,24 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
      * subproblem of the sequential value correction algorithm.
      */
     NodeId sequential_value_correction_subproblem_tree_search_maximal_spaces_queue_size = 16;
+
+    /**
+     * For VariableSizedBinPacking, in the sequential value correction and the
+     * sequential single knapsack algorithms, restrict the bin types tried at
+     * each step to the ones in which the remaining item type which fits in
+     * the smallest number of available bins fits (see
+     * 'SequentialValueCorrectionParameters::restrict_bin_types').
+     */
+    bool sequential_value_correction_restrict_bin_types = true;
+
+    /**
+     * For VariableSizedBinPacking, in the sequential value correction and the
+     * sequential single knapsack algorithms, exponent of the factor applied
+     * to the initial profit of the item types which compete for scarce bins
+     * (see 'SequentialValueCorrectionParameters::
+     * scarce_item_types_profit_factor_exponent'). 0 disables it.
+     */
+    double sequential_value_correction_scarce_item_types_profit_factor_exponent = 1.0;
 
     /**
      * Size of the queue in the tree search algorithm for the pricing knapsack subproblem of

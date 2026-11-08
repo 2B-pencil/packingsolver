@@ -95,10 +95,15 @@ int main(int argc, char *argv[])
             ("use-sequential-single-knapsack,", po::value<bool>(), "enable sequential-single-knapsack")
             ("use-sequential-value-correction,", po::value<bool>(), "enable sequential-value-correction")
             ("use-column-generation,", po::value<bool>(), "enable column-generation")
+            ("use-benders-decomposition,", po::value<bool>(), "enable Benders decomposition algorithm")
+            ("benders-decomposition-use-tree-search-relative-positions,", po::value<bool>(), "use the tree search on relative positions in the subproblems of the Benders decomposition algorithm")
+            ("use-tree-search-relative-positions,", po::value<bool>(), "use the tree search on relative positions (Feasibility objective with a single bin, open dimension objectives)")
+            ("use-global-nonlinear-programming,", po::value<bool>(), "use the global nonlinear programming algorithm (Feasibility objective with a single convex bin; requires SCIP)")
             ("use-dichotomic-search,", po::value<bool>(), "enable dichotomic search")
             ("reduce,", po::value<bool>(), "enable/disable instance reduction (preprocessing)")
             ("initial-maximum-approximation-ratio,", po::value<double>(), "initial maximum approximation ratio")
             ("maximum-approximation-ratio-factor,", po::value<double>(), "decrease factor for the maximum approximation ratio")
+            ("minimum-maximum-approximation-ratio,", po::value<double>(), "minimum value of the maximum approximation ratio when it decreases")
             ("sequential-value-correction-subproblem-tree-search-queue-size,", po::value<NodeId>(), "set sequential value correction subproblem queue size")
             ("anytime-sequential-value-correction-growing-queue-maximum-number-of-iterations,", po::value<Counter>(), "")
             ("sequential-value-correction-restrict-bin-types,", po::value<bool>(), "")
@@ -200,6 +205,14 @@ int main(int argc, char *argv[])
             parameters.use_sequential_value_correction = vm["use-sequential-value-correction"].as<bool>();
         if (vm.count("use-column-generation"))
             parameters.use_column_generation = vm["use-column-generation"].as<bool>();
+        if (vm.count("use-benders-decomposition"))
+            parameters.use_benders_decomposition = vm["use-benders-decomposition"].as<bool>();
+        if (vm.count("benders-decomposition-use-tree-search-relative-positions"))
+            parameters.benders_decomposition_use_tree_search_relative_positions = vm["benders-decomposition-use-tree-search-relative-positions"].as<bool>();
+        if (vm.count("use-tree-search-relative-positions"))
+            parameters.use_tree_search_relative_positions = vm["use-tree-search-relative-positions"].as<bool>();
+        if (vm.count("use-global-nonlinear-programming"))
+            parameters.use_global_nonlinear_programming = vm["use-global-nonlinear-programming"].as<bool>();
         if (vm.count("use-dichotomic-search"))
             parameters.use_dichotomic_search = vm["use-dichotomic-search"].as<bool>();
         if (vm.count("reduce"))
@@ -209,6 +222,8 @@ int main(int argc, char *argv[])
             parameters.initial_maximum_approximation_ratio = vm["initial-maximum-approximation-ratio"].as<double>();
         if (vm.count("maximum-approximation-ratio-factor"))
             parameters.maximum_approximation_ratio_factor = vm["maximum-approximation-ratio-factor"].as<double>();
+        if (vm.count("minimum-maximum-approximation-ratio"))
+            parameters.minimum_maximum_approximation_ratio = vm["minimum-maximum-approximation-ratio"].as<double>();
         if (vm.count("sequential-value-correction-subproblem-tree-search-queue-size"))
             parameters.sequential_value_correction_subproblem_tree_search_queue_size = vm["sequential-value-correction-subproblem-tree-search-queue-size"].as<NodeId>();
         if (vm.count("anytime-sequential-value-correction-growing-queue-maximum-number-of-iterations"))

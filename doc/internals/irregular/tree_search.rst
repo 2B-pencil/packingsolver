@@ -17,8 +17,7 @@ It is a constructive tree search where a single item is packed at each stage. Th
 
 It is a generalization of the :ref:`tree search for rectangle <internals_rectangle_tree_search>`: the items are packed from left to right, each new item resting on the item inserted just before it, and pushed to the right until it doesn't overlap the items already packed.
 
-.. image:: ../../img/irregular_tree_search.png
-   :scale: 100%
+.. image:: ../../img/irregular_tree_search.svg
    :align: center
 
 Preprocessing
@@ -56,7 +55,17 @@ Insertions
 
 To insert an item in the current bin, a supported part of the item, in one of its orientations, is put on a supporting part of the last inserted item. The item then slides along the supporting part, following the slopes of both chains, to the right, until it doesn't overlap the skyline and the extra trapezoids anymore. The insertion is discarded if the item then sticks out of the bin.
 
+The supporting and supported parts are convex chains of edges: a supporting part goes from left to right, a supported part from right to left. At the start, the first point of the supported part, its rightmost point, is put on the first point of the supporting part, its leftmost point. Then, at each step, the item moves along the current edge of the supporting part or along the current edge of the supported part, the one with the larger slope, so that the two parts stay in contact without crossing; when it reaches the end of an edge, it goes on with the next edge of the same part. So the reference point of the item (black dot) follows the edges of both parts by decreasing slope. In a real insertion, the slide stops at the first position without overlap; the figure below shows the whole slide, the supporting part in green and the supported part in red:
+
+.. image:: ../../img/irregular_tree_search_slide.svg
+   :align: center
+
 The insertions of the parent node which are still valid are kept: each one is checked against the last inserted item, and slides further if needed. So the candidate positions accumulate along the search, and an item can be inserted against any item of the front, not only the last one.
+
+In the example below, the root node has one insertion per item, at the bottom left of the bin. In the child node in which the triangle is packed, the insertions of the square and of the L-shape slide to the right until they don't overlap the triangle anymore (their previous positions are dashed), and the insertion of the triangle is discarded, since its only copy is packed. New insertions rest on the supporting part of the triangle, its hypotenuse (in green): put at its top, they stick out of the bin, so they slide down the hypotenuse until they are below the top of the bin:
+
+.. image:: ../../img/irregular_tree_search_insertions.svg
+   :align: center
 
 If no item can be inserted in the current bin, the items are inserted in a new bin, resting on the supporting parts of the bin itself: its bottom border, and the tops of its defects. Bins in which no item fits are skipped.
 
@@ -86,7 +95,7 @@ A node is also discarded when it can't lead to a better solution than the best o
 Search
 ------
 
-In anytime mode, a sequence of beam searches is run for each pair (guide, direction), in parallel. Unlike in the other tree searches, each one is a separate beam search, with its own queue size and its own simplified shapes, rather than a restart of the :ref:`iterative beam search <internals_tree_search>`: the first one has a queue of size 1, and the size of the queue is multiplied by 1.5 at each restart; the shapes are simplified with a maximum approximation ratio of 20% at first, multiplied by 0.75 at each restart, so that the first solutions are found quickly and the next ones are more accurate. The best solution found is used as a cutoff by the next beam searches: the nodes which can't lead to a better solution are discarded. The sequence stops when a beam search explores its whole tree, which is only complete for its simplified shapes.
+In anytime mode, a sequence of beam searches is run for each pair (guide, direction), in parallel. Unlike in the other tree searches, each one is a separate beam search, with its own queue size and its own simplified shapes, rather than a restart of the :ref:`iterative beam search <internals_tree_search>`: the first one has a queue of size 1, and the size of the queue is multiplied by 1.5 at each restart; the shapes are simplified with a maximum approximation ratio of 10% at first (parameter :code:`initial_maximum_approximation_ratio`), multiplied by 0.75 at each restart (parameter :code:`maximum_approximation_ratio_factor`) without going below 0.5% (parameter :code:`minimum_maximum_approximation_ratio`), so that the first solutions are found quickly and the next ones are more accurate. The best solution found is used as a cutoff by the next beam searches: the nodes which can't lead to a better solution are discarded. The sequence stops when a beam search explores its whole tree, which is only complete for its simplified shapes.
 
 When all the items can rotate freely and the bins are squares, the directions are equivalent, and a single one is used.
 

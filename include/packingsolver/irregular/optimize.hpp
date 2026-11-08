@@ -74,6 +74,22 @@ struct Output: packingsolver::Output<Instance, Solution>
     /** True if the instance has been proven infeasible. */
     bool is_proven_infeasible = false;
 
+    /**
+     * If the instance has been proven infeasible, smallest subset of the
+     * items found not to fit, as (item type, number of copies) pairs sorted
+     * by item type; all the items if no smaller subset was found.
+     */
+    std::vector<std::pair<ItemTypeId, ItemPos>> infeasible_subset;
+
+    /** Number of items of the infeasible subset. */
+    ItemPos infeasible_subset_number_of_items() const
+    {
+        ItemPos number_of_items = 0;
+        for (const std::pair<ItemTypeId, ItemPos>& p: infeasible_subset)
+            number_of_items += p.second;
+        return number_of_items;
+    }
+
     /** Return 'true' iff the current bound proves the best solution optimal. */
     bool is_proven_optimal() const
     {
@@ -82,9 +98,15 @@ struct Output: packingsolver::Output<Instance, Solution>
         if (is_proven_infeasible)
             return true;
         switch (solution_pool.best().instance().objective()) {
-        case Objective::Knapsack:
+        case Objective::Knapsack: {
+            Profit knapsack_goal = solution_pool.best().instance().knapsack_goal();
+            // The bound proves that the knapsack goal can't be reached.
+            if (std::isfinite(knapsack_goal) && knapsack_bound < knapsack_goal)
+                return true;
             return solution_pool.best().feasible()
-                && equal_profit(knapsack_bound, solution_pool.best().profit());
+                && (equal_profit(knapsack_bound, solution_pool.best().profit())
+                        || solution_pool.best().profit() >= knapsack_goal);
+        }
         case Objective::BinPacking:
             return solution_pool.best().feasible()
                 && bin_packing_bound == solution_pool.best().number_of_bins();
@@ -115,8 +137,14 @@ struct Output: packingsolver::Output<Instance, Solution>
      */
     void update_bounds(const Output& output)
     {
-        if (output.is_proven_infeasible)
+        if (output.is_proven_infeasible) {
+            if (!is_proven_infeasible
+                    || output.infeasible_subset_number_of_items()
+                    < infeasible_subset_number_of_items()) {
+                infeasible_subset = output.infeasible_subset;
+            }
             is_proven_infeasible = true;
+        }
         switch (solution_pool.best().instance().objective()) {
         case Objective::Knapsack:
             if (output.knapsack_bound < knapsack_bound)
@@ -152,6 +180,11 @@ struct Output: packingsolver::Output<Instance, Solution>
         json["OpenDimensionXBound"] = open_dimension_x_bound;
         json["OpenDimensionYBound"] = open_dimension_y_bound;
         json["IsProvenInfeasible"] = is_proven_infeasible;
+        if (is_proven_infeasible) {
+            json["InfeasibleSubset"] = nlohmann::json::array();
+            for (const std::pair<ItemTypeId, ItemPos>& p: infeasible_subset)
+                json["InfeasibleSubset"].push_back({{"ItemTypeId", p.first}, {"Copies", p.second}});
+        }
         return json;
     }
 
@@ -160,6 +193,8 @@ struct Output: packingsolver::Output<Instance, Solution>
         packingsolver::Output<Instance, Solution>::format(os);
         int width = format_width();
         os << std::setw(width) << std::left << "Is proven infeasible: " << is_proven_infeasible << std::endl;
+        if (is_proven_infeasible)
+            os << std::setw(width) << std::left << "Infeasible subset: " << infeasible_subset_number_of_items() << " items" << std::endl;
         switch (solution_pool.best().instance().objective()) {
         case Objective::Knapsack:
             write_bound(os, width, solution_pool.best().profit(), knapsack_bound);
@@ -257,11 +292,48 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
     /** Use column generation algorithm. */
     bool use_column_generation = false;
 
+    /**
+     * Use Benders decomposition algorithm (only for the 'Knapsack',
+     * 'BinPacking' and 'VariableSizedBinPacking' objectives; only selected
+     * automatically in 'Exact' mode, for the 'Knapsack' objective with a
+     * single bin).
+     */
+    bool use_benders_decomposition = false;
+
+    /**
+     * Use the tree search on relative positions in the subproblems of the
+     * Benders decomposition algorithm, to prove that the items of a bin
+     * don't fit.
+     *
+     * Always used in 'Exact' mode.
+     */
+    bool benders_decomposition_use_tree_search_relative_positions = false;
+
+    /**
+     * Use the tree search on relative positions (only for the 'Feasibility'
+     * objective with a single bin, and for the open dimension objectives;
+     * only selected automatically in 'Exact' mode).
+     */
+    bool use_tree_search_relative_positions = false;
+
+    /**
+     * Use the global nonlinear programming algorithm (only for the
+     * 'Feasibility' objective with a single convex bin; only selected
+     * automatically in 'Exact' mode, if an item type has continuous
+     * rotations). Requires SCIP.
+     */
+    bool use_global_nonlinear_programming = false;
+
     /** Initial maximum approximation ratio. */
-    double initial_maximum_approximation_ratio = 0.20;
+    double initial_maximum_approximation_ratio = 0.10;
 
     /** Decrease factor for the maximum approximation ratio. */
     double maximum_approximation_ratio_factor = 0.75;
+
+    /**
+     * Minimum value of the maximum approximation ratio when it decreases.
+     */
+    double minimum_maximum_approximation_ratio = 0.005;
 
     /** Threshold to consider that a bin contains "many" items. */
     Counter many_items_in_bins_threshold = 16;
@@ -339,6 +411,12 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
      */
     NodeId column_generation_subproblem_tree_search_queue_size = 128;
 
+    /**
+     * Size of the queue for the feasibility subproblem of the Benders
+     * decomposition algorithm.
+     */
+    NodeId benders_decomposition_subproblem_tree_search_queue_size = 128;
+
     /*
      * Parameters for anytime mode
      */
@@ -412,6 +490,9 @@ struct OptimizeParameters: packingsolver::Parameters<Instance, Solution, Output>
 
     /** Number of iterations of the sequential value correction algorithm. */
     Counter not_anytime_sequential_value_correction_number_of_iterations = 32;
+
+    /** Number of iterations of the Benders decomposition algorithm. */
+    Counter not_anytime_benders_decomposition_number_of_iterations = 32;
 
     /**
      * Maximum number of failed separations of the local search, after which

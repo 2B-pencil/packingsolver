@@ -12,6 +12,7 @@
 #include "packingsolver/rectangle/instance_builder.hpp"
 #include "packingsolver/onedimensional/instance_builder.hpp"
 #include "packingsolver/onedimensional/optimize.hpp"
+#include "onedimensional/trivial_bound.hpp"
 #include "algorithms/dichotomic_search.hpp"
 #include "algorithms/sequential_value_correction.hpp"
 #include "algorithms/column_generation.hpp"
@@ -190,7 +191,17 @@ void optimize_onedimensional_bound(
     onedim_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
     onedim_parameters.optimization_mode = OptimizationMode::NotAnytime;
     onedim_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
-    auto onedim_output = optimize(onedim_instance, onedim_parameters);
+    onedimensional::TrivialBoundParameters onedim_trivial_bound_parameters;
+    onedim_trivial_bound_parameters.verbosity_level = 0;
+    onedim_trivial_bound_parameters.timer = parameters.timer;
+    onedim_trivial_bound_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    onedim_trivial_bound_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    // With many item types, solving the onedimensional instance may take a
+    // long time (e.g. column generation), so only its trivial bound is
+    // computed.
+    onedimensional::Output onedim_output = (instance.number_of_item_types() < 100)?
+        onedimensional::optimize(onedim_instance, onedim_parameters):
+        onedimensional::trivial_bound(onedim_instance, onedim_trivial_bound_parameters);
 
     // The one-dimensional instance is a relaxation: if it is infeasible, so
     // is the instance.
@@ -356,12 +367,18 @@ void optimize_tree_search_hypergraph(
     TreeSearchHypergraphParameters tsh_parameters;
     tsh_parameters.verbosity_level = 0;
     tsh_parameters.timer = parameters.timer;
+    tsh_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    tsh_parameters.best_known_profit = [&algorithm_formatter]()
+    {
+        return algorithm_formatter.best_solution_profit();
+    };
     tsh_parameters.new_solution_callback = [&algorithm_formatter](
             const rectangleguillotine::Output& ps_output)
     {
         algorithm_formatter.update_solution(
                 ps_output.solution_pool.best(),
                 "TSH " + ps_output.solution_pool.best_label());
+        algorithm_formatter.update_bounds(ps_output);
     };
     tree_search_hypergraph(instance, tsh_parameters);
 }
@@ -419,11 +436,45 @@ void optimize_sequential_strips_onedimensional(
     sequential_strips_onedimensional(instance, sso_parameters);
 }
 
+/**
+ * Return true iff the tree search maximal spaces supports the parameters of
+ * 'instance'.
+ */
+bool tree_search_maximal_spaces_supported(
+        const Instance& instance)
+{
+    return instance.number_of_stages_unlimited()
+        && instance.number_of_defects() == 0
+        && instance.number_of_stacks() == instance.number_of_item_types()
+        && instance.parameters().minimum_waste_length == 0
+        && instance.parameters().minimum_distance_1_cuts == 0
+        && instance.parameters().maximum_distance_1_cuts == -1
+        && instance.parameters().minimum_distance_2_cuts == 0
+        && instance.parameters().maximum_distance_2_cuts == -1
+        && instance.parameters().maximum_number_1_cuts == -1
+        && instance.parameters().maximum_number_2_cuts == -1;
+}
+
+/**
+ * Compute the blocks of the tree search maximal spaces of 'instance' if this
+ * algorithm may solve its sub-instances, so that they are computed once for
+ * all the subproblems of the algorithms which solve sub-instances, instead
+ * of once per subproblem (see 'Instance::get_blocks').
+ */
+void request_blocks(
+        const Instance& instance,
+        AlgorithmFormatter& algorithm_formatter)
+{
+    if (tree_search_maximal_spaces_supported(instance))
+        instance.get_blocks(algorithm_formatter.end_boolean());
+}
+
 void optimize_sequential_single_knapsack(
         const Instance& instance,
         const OptimizeParameters& parameters,
         AlgorithmFormatter& algorithm_formatter)
 {
+    request_blocks(instance, algorithm_formatter);
     for (Counter iteration = 0, queue_size = 1;; ++iteration) {
         NodeId queue_size_ms = queue_size;
         if (parameters.optimization_mode != OptimizationMode::Anytime
@@ -453,6 +504,10 @@ void optimize_sequential_single_knapsack(
         svc_parameters.verbosity_level = 0;
         svc_parameters.timer = parameters.timer;
         svc_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+        svc_parameters.restrict_bin_types
+            = parameters.sequential_value_correction_restrict_bin_types;
+        svc_parameters.scarce_item_types_profit_factor_exponent
+            = parameters.sequential_value_correction_scarce_item_types_profit_factor_exponent;
         svc_parameters.maximum_number_of_iterations = 1;
         // No later iteration to adjust profits away from this initial
         // value - see 'SequentialValueCorrectionParameters::
@@ -491,6 +546,7 @@ void optimize_sequential_value_correction(
         const OptimizeParameters& parameters,
         AlgorithmFormatter& algorithm_formatter)
 {
+    request_blocks(instance, algorithm_formatter);
     SequentialValueCorrectionFunction<Instance, Solution> kp_solve
         = [&algorithm_formatter, &parameters](const Instance& kp_instance)
         {
@@ -514,6 +570,10 @@ void optimize_sequential_value_correction(
     svc_parameters.verbosity_level = 0;
     svc_parameters.timer = parameters.timer;
     svc_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    svc_parameters.restrict_bin_types
+        = parameters.sequential_value_correction_restrict_bin_types;
+    svc_parameters.scarce_item_types_profit_factor_exponent
+        = parameters.sequential_value_correction_scarce_item_types_profit_factor_exponent;
     svc_parameters.initial_profit_exponent = 1.1;
     if (parameters.optimization_mode != OptimizationMode::Anytime
             && parameters.optimization_mode != OptimizationMode::Exact)
@@ -600,8 +660,9 @@ void optimize_column_generation(
         AlgorithmFormatter& algorithm_formatter,
         BinPos lower_bound)
 {
+    request_blocks(instance, algorithm_formatter);
     ColumnGenerationPricingFunction<Instance, InstanceBuilder, Solution, rectangleguillotine::Output> pricing_function
-        = [&algorithm_formatter, &parameters](const Instance& kp_instance, PricingType)
+        = [&algorithm_formatter, &parameters](const Instance& kp_instance, PricingType pricing_type)
         {
             OptimizeParameters kp_parameters;
             kp_parameters.verbosity_level = 0;
@@ -616,6 +677,23 @@ void optimize_column_generation(
             kp_parameters.not_anytime_tree_search_maximal_spaces_queue_size
                 = parameters.column_generation_subproblem_tree_search_maximal_spaces_queue_size;
             kp_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+            kp_parameters.tree_search_hypergraph_maximum_number_of_states
+                = parameters.tree_search_hypergraph_maximum_number_of_states;
+            // 'PricingType::Dual' calls are rare and exist to prove a bound:
+            // the 'tree_search_hypergraph' algorithm is exact, and its bound
+            // is valid even when it is interrupted, so force it alone,
+            // bypassing the regular (heuristic) automatic algorithm
+            // selection, when it supports the instance.
+            // In 'Exact' mode, also solved in 'Exact' mode so that the bound
+            // is actually proven.
+            if (pricing_type == PricingType::Dual
+                    && tree_search_hypergraph_supported(kp_instance)
+                    && tree_search_hypergraph_number_of_states(kp_instance)
+                    <= parameters.tree_search_hypergraph_maximum_number_of_states) {
+                if (parameters.optimization_mode == OptimizationMode::Exact)
+                    kp_parameters.optimization_mode = OptimizationMode::Exact;
+                kp_parameters.use_tree_search_hypergraph = true;
+            }
             return optimize(kp_instance, kp_parameters);
         };
 
@@ -625,6 +703,7 @@ void optimize_column_generation(
     cg_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
     cg_parameters.optimization_mode = parameters.optimization_mode;
     cg_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    cg_parameters.pricing_function_has_dual_bound = true;
     // The sequential feasibility scheme solves a column generation for each
     // number of bins from the lower bound: too slow when the solutions use
     // many bins. With a single bin type, the bound of the master problem is
@@ -869,18 +948,14 @@ packingsolver::rectangleguillotine::Output packingsolver::rectangleguillotine::o
                     && instance.parameters().maximum_number_2_cuts == -1
                     ) {
                 use_tree_search_hypergraph_infinite_copies = true;
-            } else if (instance.number_of_stages_unlimited()
+            } else if ((instance.objective() == Objective::Knapsack
+                        || instance.objective() == Objective::Feasibility
+                        || instance.objective() == Objective::BinPacking
+                        || instance.objective() == Objective::BinPackingWithLeftovers
+                        || instance.objective() == Objective::OpenDimensionX
+                        || instance.objective() == Objective::OpenDimensionY)
                     //&& mean_number_of_items_in_bins > parameters.many_items_in_bins_threshold_2
-                    && instance.number_of_defects() == 0
-                    && instance.number_of_stacks() == instance.number_of_item_types()
-                    && instance.parameters().minimum_waste_length == 0
-                    && instance.parameters().minimum_distance_1_cuts == 0
-                    && instance.parameters().maximum_distance_1_cuts == -1
-                    && instance.parameters().minimum_distance_2_cuts == 0
-                    && instance.parameters().maximum_distance_2_cuts == -1
-                    && instance.parameters().maximum_number_1_cuts == -1
-                    && instance.parameters().maximum_number_2_cuts == -1
-                    ) {
+                    && tree_search_maximal_spaces_supported(instance)) {
                 use_tree_search_maximal_spaces = true;
             } else if ((instance.objective() == Objective::Knapsack
                         || instance.objective() == Objective::OpenDimensionX
@@ -915,6 +990,16 @@ packingsolver::rectangleguillotine::Output packingsolver::rectangleguillotine::o
                 use_column_generation_strips = true;
             } else {
                 use_tree_search = true;
+            }
+            // In 'Exact' mode, the 'tree_search_hypergraph' algorithm proves
+            // the optimality (or the infeasibility) of the solutions, while
+            // the other algorithms find good solutions quickly, from which
+            // it starts.
+            if (parameters.optimization_mode == OptimizationMode::Exact
+                    && tree_search_hypergraph_supported(instance)
+                    && tree_search_hypergraph_number_of_states(instance)
+                    <= parameters.tree_search_hypergraph_maximum_number_of_states) {
+                use_tree_search_hypergraph = true;
             }
         }
     } else if (instance.objective() == Objective::Feasibility) {

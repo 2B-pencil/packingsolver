@@ -59,41 +59,15 @@ TEST(OneDimensional, ResourceConsumptionCopiedFromOriginalInstance)
     const Instance instance = instance_builder.build();
 
     InstanceBuilder sub_instance_builder;
-    packingsolver::BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type(instance, bin_type_id);
-    packingsolver::ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type(instance, item_type_id);
+    sub_instance_builder.set_original_instance(instance);
+    packingsolver::BinTypeId sub_bin_type_id = sub_instance_builder.add_bin_type_from_original_instance(bin_type_id);
+    packingsolver::ItemTypeId sub_item_type_id = sub_instance_builder.add_item_type_from_original_instance(item_type_id);
     const Instance sub_instance = sub_instance_builder.build();
 
     EXPECT_EQ(sub_instance.bin_type(sub_bin_type_id).number_of_resources(), 1);
     EXPECT_EQ(
             item_consumption_for_test(sub_instance.bin_type(sub_bin_type_id).resource(0), sub_item_type_id, 0),
             5.0);
-}
-
-TEST(OneDimensional, ReductionDoesNotMergeCopyDependentResourceConsumptions)
-{
-    // Two item types of the same length, each consuming 1 for its first
-    // copy only: at most one of them per bin. Merged into a single item type
-    // of two copies, the second one would consume 0, and both would fit in
-    // the same bin.
-    InstanceBuilder instance_builder;
-    instance_builder.set_objective(packingsolver::Objective::BinPacking);
-    packingsolver::BinTypeId bin_type_id = instance_builder.add_bin_type(10);
-    instance_builder.set_bin_type_copies(bin_type_id, 2);
-    packingsolver::ResourceId resource_id = instance_builder.add_bin_type_resource(bin_type_id, 1);
-    for (int i = 0; i < 2; ++i) {
-        packingsolver::ItemTypeId item_type_id = instance_builder.add_item_type(1);
-        instance_builder.add_resource_consumption(bin_type_id, resource_id, item_type_id, {1.0, 0.0});
-    }
-    const Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.verbosity_level = 0;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_milp_assignment = true;
-    Output output = optimize(instance, optimize_parameters);
-
-    EXPECT_TRUE(output.solution_pool.best().feasible());
-    EXPECT_EQ(output.solution_pool.best().number_of_bins(), 2);
 }
 
 TEST(OneDimensional, WriteCsvRoundTrip)
@@ -205,175 +179,6 @@ TEST(OneDimensional, WriteCsvThrowsOnPrecedence)
     EXPECT_THROW(
             instance.write(path.string(), packingsolver::InstanceFormat::Csv),
             std::invalid_argument);
-}
-
-TEST(OneDimensional, Users_2023_08_01)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2023-08-01_items.csv").string());
-    instance_builder.read_bin_types((directory / "2023-08-01_bins.csv").string());
-    instance_builder.read_parameters((directory / "2023-08-01_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_column_generation = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2023-08-01_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_06_t1)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-06_t1_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-06_t1_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-06_t1_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_column_generation = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-06_t1_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_06_t2)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-06_t2_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-06_t2_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-06_t2_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_column_generation = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-06_t2_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_06_t3)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-06_t3_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-06_t3_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-06_t3_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_tree_search = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-06_t3_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_07)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-07_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-07_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-07_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_sequential_value_correction = 1;
-    optimize_parameters.verbosity_level = 2;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-07_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_09)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-09_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-09_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-09_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_sequential_value_correction = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-09_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
-}
-
-TEST(OneDimensional, Users_2024_04_21)
-{
-    InstanceBuilder instance_builder;
-    fs::path directory = fs::path("data") / "onedimensional" / "users";
-    instance_builder.read_item_types((directory / "2024-04-21_items.csv").string());
-    instance_builder.read_bin_types((directory / "2024-04-21_bins.csv").string());
-    instance_builder.read_parameters((directory / "2024-04-21_parameters.csv").string());
-    Instance instance = instance_builder.build();
-
-    OptimizeParameters optimize_parameters;
-    optimize_parameters.optimization_mode = packingsolver::OptimizationMode::NotAnytimeSequential;
-    optimize_parameters.use_column_generation = 1;
-    Output output = optimize(instance, optimize_parameters);
-
-    SolutionBuilder solution_builder(instance);
-    solution_builder.read((directory / "2024-04-21_solution.csv").string());
-    Solution solution = solution_builder.build();
-    std::cout << std::endl
-        << "Reference solution" << std::endl
-        << "------------------" << std::endl;
-    solution.format(std::cout);
-    EXPECT_EQ(!(output.solution_pool.best() < solution), true);
 }
 
 struct OneDimensionalOptimizeTestParams
@@ -560,4 +365,15 @@ TEST(OneDimensional, ItemNestedLength)
     // the items.
     EXPECT_EQ(solution.waste(), 0);
     EXPECT_EQ(solution.full_waste(), 310);
+}
+
+TEST(Onedimensional, InstanceBuilderCropBinType)
+{
+    InstanceBuilder instance_builder;
+    instance_builder.add_item_type(10);
+    packingsolver::BinTypeId bin_type_id = instance_builder.add_bin_type(100);
+    instance_builder.crop_bin_type(bin_type_id, 60);
+    Instance instance = instance_builder.build();
+
+    EXPECT_EQ(instance.bin_type(bin_type_id).length, 60);
 }

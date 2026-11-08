@@ -22,10 +22,9 @@ At each stage, a new third-level sub-plate is filled, either:
 * in the current bin, in a new first-level sub-plate, to the right of the last one;
 * in a new bin.
 
-The figure below shows a node (top) and children of each of these kinds (bottom):
+The figure below shows a node (top) and its children of the first three kinds inserting the items 3 and 4 (bottom); the dashed lines are the first- and second-level sub-plates, which grow to contain the new item. Item 4 doesn't fit in a new second-level sub-plate:
 
-.. image:: ../../img/rectangleguillotine_tree_search.png
-   :scale: 100%
+.. image:: ../../img/rectangleguillotine_tree_search_children.svg
    :align: center
 
 A third-level sub-plate contains a single item at its bottom (with possibly some waste above it), a single item at its top (when it would intersect a defect at the bottom), two items of the same width one above the other (with the :code:`roadef2018` cut type), or no item (to skip a defect).
@@ -51,7 +50,7 @@ A node stores:
 * for each stack, the number of its items packed;
 * the number of items packed, their area and their profit, the numbers and lengths of the cuts of each stage, the cutting cost and the resource consumption of the current bin.
 
-.. image:: ../../img/rectangleguillotine_tree_search_front.png
+.. image:: ../../img/rectangleguillotine_tree_search_front.svg
    :scale: 100%
    :align: center
 
@@ -148,7 +147,7 @@ Two nodes with the same number of items packed in each stack can be compared, un
 * node 1 is in an earlier bin; or
 * both are in the same bin, with the same orientation of the 1-cuts, and the front of node 1 is nowhere beyond the front of node 2: for example, :math:`x_1^{curr}` of node 1 is not larger than :math:`x_1^{prev}` of node 2, or the five positions of the front of node 1 are not larger than the ones of node 2 (with special cases when the current second-level sub-plate reaches the top of the bin).
 
-.. image:: ../../img/rectangleguillotine_tree_search_dominance.png
+.. image:: ../../img/rectangleguillotine_tree_search_dominance.svg
    :scale: 100%
    :align: center
 

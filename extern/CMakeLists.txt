@@ -61,10 +61,17 @@ endif()
 if (PACKINGSOLVER_USE_KNITRO)
     set(MATHOPTSOLVERSCMAKE_USE_KNITRO oN)
 endif()
+if (PACKINGSOLVER_USE_SCIP)
+    set(MATHOPTSOLVERSCMAKE_USE_SCIP ON)
+    # Ipopt is only used by the NLP heuristics of SCIP, not by its spatial
+    # branch-and-bound; its prebuilt static libraries don't link on macOS
+    # (the gfortran runtime needs libgcc) and are shared on Windows.
+    set(MATHOPTSOLVERSCMAKE_SCIP_USE_IPOPT OFF)
+endif()
 FetchContent_Declare(
     mathoptsolverscmake
     GIT_REPOSITORY https://github.com/fontanf/mathoptsolverscmake.git
-    GIT_TAG 358904e29889b129ec2f733866abd8d18f7a4978
+    GIT_TAG 2654c5ee7e8f136fd5d196ada1917189729e33a1
     #SOURCE_DIR "${PROJECT_SOURCE_DIR}/../mathoptsolverscmake/"
     EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(mathoptsolverscmake)

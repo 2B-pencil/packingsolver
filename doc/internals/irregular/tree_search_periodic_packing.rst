@@ -6,7 +6,7 @@ Tree search with periodic packings
 Objectives
 ----------
 
-This algorithm only handles instances with a single bin. It solves the :code:`knapsack` and :code:`feasibility` objectives directly, and the :code:`bin-packing`, :code:`bin-packing-with-leftovers`, :code:`open-dimension-x`, :code:`open-dimension-y` and :code:`open-dimension-xy` objectives through the :ref:`sequential feasibility <internals_generic_algorithms_sequential_feasibility>` algorithm.
+This algorithm only handles instances with a single bin. It solves the :code:`knapsack` and :code:`feasibility` objectives directly, and the :code:`bin-packing`, :code:`bin-packing-with-leftovers`, :code:`open-dimension-x`, :code:`open-dimension-y` and :code:`open-dimension-xy` objectives through the :ref:`sequential feasibility <internals_generic_algorithms_sequential_feasibility>` algorithm. It supports the resources of the bin.
 
 Principle
 ---------
@@ -34,7 +34,12 @@ A rectangular lattice, where :math:`v_2` is perpendicular to :math:`v_1`, is als
 
 Periodic packings mixing item types are also built, for the items shaped like an L or a U: such a *wrapper* item has a large empty rectangle touching a side of its bounding box. A *base*, a single item of another item type or the unit cell of one of its periodic packings, is put in this empty rectangle, and a second copy of the wrapper, rotated by 180°, is put on the other side of the base.
 
-The periodic packings only depend on the item types, so they are computed once by the instance builder, on simplified shapes, and stored in the instance.
+The figure below shows a periodic packing of each kind, as computed by the solver: the unit cell is darker, and the arrows are the vectors of the lattice. The horizontal lattice of the hexagons is also rectangular; their vertical lattice is denser. Two triangles in rotations 0° and 180° form a square, and two L-shapes in rotations 0° and 180° wrapped around a rectangle tile the plane exactly:
+
+.. image:: ../../img/irregular_periodic_packings.svg
+   :align: center
+
+The periodic packings only depend on the item types, so they are computed once, on simplified shapes, the first time an algorithm needs them, and stored in the cache of the instance. The sub-instances built from it get the periodic packings of their item types from this cache.
 
 Blocks
 ------
@@ -48,12 +53,14 @@ The blocks are built from the periodic packings, for the bin of the instance:
 
 A block dominates another one if it contains the same item types, at least as many copies of each, and takes no more space in both dimensions. Dominated blocks are discarded as they are generated, except the blocks of a single item, which are always kept: they may be the only way to pack the last copy of an item type.
 
+The resource consumption of a block is the consumption of each resource of the bin by its items alone in the bin, the consumption of the copies of an item type starting at the first entry of its consumption schedule. The blocks which exceed the capacity of a resource which is not *penalize* are discarded. The consumption of a node is the sum of the consumptions of its blocks: it is exact for the uniform consumption schedules, and overestimates the consumption for a non-increasing schedule when the copies of an item type are in several blocks.
+
 Branching scheme
 ----------------
 
-A node stores the blocks placed and the list of the *maximal empty spaces* of the bin: the empty rectangles which aren't contained in another empty rectangle. The obstacles (the borders of a non-rectangular bin, the defects and the fixed items) are approximated by rectangles and cut out of the empty spaces from the start.
+A node stores the blocks placed, their resource consumption (the sum of the consumptions of the fixed items and of the blocks placed) and the list of the *maximal empty spaces* of the bin: the empty rectangles which aren't contained in another empty rectangle. The obstacles (the borders of a non-rectangular bin, the defects and the fixed items) are approximated by rectangles and cut out of the empty spaces from the start.
 
-To generate the children of a node, the empty space with a corner closest to a corner of the bin is selected, and one child is generated for each block fitting in it, placed in that corner. The empty spaces are then updated.
+To generate the children of a node, the empty space with a corner closest to a corner of the bin is selected, and one child is generated for each block fitting in it, placed in that corner. The blocks which would exceed the capacity of a resource which is not *penalize* given the blocks already placed are not considered. The empty spaces are then updated.
 
 Each insertion is scored by
 
@@ -61,7 +68,7 @@ Each insertion is scored by
 
    V \times C^\alpha \times F^\beta \times N^{-\gamma}
 
-where :math:`V` is the profit of the block, :math:`C` its relative contact with the sides of the space and the other blocks, :math:`F` its fill rate (the area of its items divided by the area of its bounding box), and :math:`N` its number of items. Two sets of exponents are used: one while the bin is not filled much, and the other once the fill rate of the node exceeds a threshold. The children of a node are generated by decreasing score.
+where :math:`V` is the profit of the block, minus the penalties of the *penalize* resources whose capacity it makes exceeded, :math:`C` its relative contact with the sides of the space and the other blocks, :math:`F` its fill rate (the area of its items divided by the area of its bounding box), and :math:`N` its number of items. Two sets of exponents are used: one while the bin is not filled much, and the other once the fill rate of the node exceeds a threshold. The children of a node are generated by decreasing score.
 
 A node is evaluated by completing it greedily, inserting the best scored block at each step; the beam search keeps the nodes with the best completions. The final solutions are completed greedily too.
 

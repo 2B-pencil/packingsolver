@@ -10,6 +10,7 @@
 #include "box/dual_feasible_functions.hpp"
 #include "packingsolver/onedimensional/instance_builder.hpp"
 #include "packingsolver/onedimensional/optimize.hpp"
+#include "onedimensional/trivial_bound.hpp"
 
 #include "algorithms/dichotomic_search.hpp"
 #include "algorithms/sequential_value_correction.hpp"
@@ -65,7 +66,17 @@ void optimize_onedimensional_bound(
         OptimizationMode::NotAnytimeSequential:
         OptimizationMode::NotAnytime;
     onedim_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
-    auto onedim_output = onedimensional::optimize(onedim_instance, onedim_parameters);
+    onedimensional::TrivialBoundParameters onedim_trivial_bound_parameters;
+    onedim_trivial_bound_parameters.verbosity_level = 0;
+    onedim_trivial_bound_parameters.timer = parameters.timer;
+    onedim_trivial_bound_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    onedim_trivial_bound_parameters.linear_programming_solver_name = parameters.linear_programming_solver_name;
+    // With many item types, solving the onedimensional instance may take a
+    // long time (e.g. column generation), so only its trivial bound is
+    // computed.
+    onedimensional::Output onedim_output = (box_instance.number_of_item_types() < 100)?
+        onedimensional::optimize(onedim_instance, onedim_parameters):
+        onedimensional::trivial_bound(onedim_instance, onedim_trivial_bound_parameters);
 
     // The one-dimensional instance is a relaxation: if it is infeasible, so
     // is the instance.
@@ -318,6 +329,10 @@ void optimize_sequential_single_knapsack(
         svc_parameters.verbosity_level = 0;
         svc_parameters.timer = parameters.timer;
         svc_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+        svc_parameters.restrict_bin_types
+            = parameters.sequential_value_correction_restrict_bin_types;
+        svc_parameters.scarce_item_types_profit_factor_exponent
+            = parameters.sequential_value_correction_scarce_item_types_profit_factor_exponent;
         svc_parameters.maximum_number_of_iterations = 1;
         // No later iteration to adjust profits away from this initial
         // value - see 'SequentialValueCorrectionParameters::
@@ -389,6 +404,10 @@ void optimize_sequential_value_correction(
     svc_parameters.verbosity_level = 0;
     svc_parameters.timer = parameters.timer;
     svc_parameters.timer.add_end_boolean(&algorithm_formatter.end_boolean());
+    svc_parameters.restrict_bin_types
+        = parameters.sequential_value_correction_restrict_bin_types;
+    svc_parameters.scarce_item_types_profit_factor_exponent
+        = parameters.sequential_value_correction_scarce_item_types_profit_factor_exponent;
     if (parameters.optimization_mode != OptimizationMode::Anytime
             && parameters.optimization_mode != OptimizationMode::Exact) {
         svc_parameters.maximum_number_of_iterations

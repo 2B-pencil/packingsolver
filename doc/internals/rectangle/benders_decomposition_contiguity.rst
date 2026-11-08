@@ -15,7 +15,7 @@ Principle
 
 It is a combinatorial Benders decomposition, following Côté, Dell'Amico and Iori (2014) for the strip packing problem, as adapted by Wang, Baldacci, Furini, Wei and Liu (2025) to a bin of fixed size.
 
-Unlike the :ref:`Benders decomposition <internals_rectangle_benders_decomposition>`, whose master problem only sees the area of the items, the master problem here also decides the x-position of each item. The subproblem, the *y-check*, then only has to find y-positions consistent with them.
+Unlike the :ref:`Benders decomposition <internals_rectangle_benders_decomposition>`, whose master problem only sees the area of the items, the master problem here also decides the x-position of each item. The subproblem, the *y-check*, then only has to find y-positions consistent with them. It runs in both directions in parallel, the x-axis and the y-axis exchanging their roles (see :ref:`Directions <internals_rectangle_benders_decomposition_contiguity_directions>`).
 
 Master problem
 --------------
@@ -24,7 +24,7 @@ Master problem
 
 On the left of the figure below, a solution of the master problem: the heights of the columns don't exceed the height of the bin, but items A and B are cut into slices at different heights. On the right, the y-check finds y-positions for the same x-positions:
 
-.. image:: ../../img/rectangle_benders_decomposition_contiguity_relaxation.png
+.. image:: ../../img/rectangle_benders_decomposition_contiguity_relaxation.svg
    :scale: 100%
    :align: center
 
@@ -72,6 +72,10 @@ On the left of the figure below, a solution of the master problem: the heights o
 
 The tree search decides the units one by one, in a fixed order (by item type, then by copy). A child places the next unit at one of its candidate placements, if the heights of its columns stay within the height of the bin and no cut or resource capacity is exceeded; for the :code:`knapsack` objective, another child skips the unit. The nodes are ordered by profit, and a node is discarded if its profit plus the profit of all the remaining units isn't larger than the profit of the best solution found. There is no dominance. It is explored by the :ref:`iterative beam search <internals_tree_search>`, run with a single queue of size 1024 (parameter :code:`master_problem_tree_search_not_anytime_queue_size`). Its solution is only proven optimal if the search was complete; otherwise, the solution of the decomposition isn't proven optimal either. In the :code:`exact` mode, the queue grows until the search is complete, so the master problem is solved to optimality.
 
+**Sweep.** For the :code:`feasibility` objective, the master problem of the first iteration, which has no cuts yet, is first solved by a *sweep*, a search specialized in proving that it is infeasible. In a solution of the master problem, the units can be pushed to the left, one at a time, in the order of their positions, until each one starts at 0 or at the end of another one. The sweep processes these starts from left to right: at the current start, either another unit starts there, the units starting at the same start being chosen in a fixed order, or the start is closed and the search moves to the next one. A node is discarded if the area of the remaining units exceeds the free space of the columns from the current start on, not counting the columns where the lowest remaining unit doesn't fit. The positions are not restricted to the meet-in-the-middle patterns, and a unit which can be rotated has its smallest length as width and height, which keeps a relaxation.
+
+If the sweep proves the master problem infeasible, the instance is infeasible. Otherwise, after at most :math:`10^8` column operations (parameter :code:`first_master_problem_sweep_maximum_number_of_operations`), the decomposition continues as usual. On instances where the infeasibility comes from lengths which can't be combined to fill the columns, it is often much faster than the tree search.
+
 Subproblem: the y-check
 -----------------------
 
@@ -85,7 +89,7 @@ Given the x-positions (and orientations) of the selected units, the y-check look
 
 **Branch-and-bound.** A node stores the *skyline* of the units placed: the height used in each column. The *niche* is the leftmost run of columns at the lowest height. The children of a node place, at the bottom of the niche, each unplaced unit lying entirely inside it (by increasing x-position); a last child *closes* the niche, raising it to the height of its lowest neighbor, without placing anything. When a unit is placed, the columns of the niche to its left are raised to its top (or to the height of the left neighbor of the niche, if smaller): any other unit placed there later would only be a different order of the same packing.
 
-.. image:: ../../img/rectangle_benders_decomposition_contiguity_niche.png
+.. image:: ../../img/rectangle_benders_decomposition_contiguity_niche.svg
    :scale: 100%
    :align: center
 
@@ -121,9 +125,20 @@ Then the y-check is run on its solution:
 
 The cut forbids the remaining units at all their candidate placements in their windows, in the same orientation. In the example below, B overlaps A and C, which don't overlap each other: A can move as far as x = 6 and C as far as x = 1 while still overlapping B.
 
-.. image:: ../../img/rectangle_benders_decomposition_contiguity_lifted_windows.png
+.. image:: ../../img/rectangle_benders_decomposition_contiguity_lifted_windows.svg
    :scale: 100%
    :align: center
+
+.. _internals_rectangle_benders_decomposition_contiguity_directions:
+
+Directions
+----------
+
+The description above is along the x-axis: the master problem decides the x-positions of the items, and the y-check their y-positions. The decomposition can also be run along the y-axis, on the instance with the two axes swapped: the master problem then decides the y-positions, and the y-check the x-positions.
+
+Which direction is faster depends on the instance: the lengths of the items may be hard to combine into the width of the bin but not into its height, or conversely, and the contiguous relaxation along one axis may be infeasible while it is feasible along the other. By default (parameter :code:`direction` set to :code:`Any`), both directions run in parallel, and the first one to find a solution, to prove the instance infeasible, or to prove the solution optimal stops the other one. In the :code:`not-anytime-sequential` mode, they run one after the other; in the :code:`not-anytime-deterministic` mode, their results are combined in a fixed order once both have ended.
+
+The local Benders decompositions of the :code:`knapsack` objective run in the direction of the decomposition which calls them.
 
 Automatic selection
 -------------------

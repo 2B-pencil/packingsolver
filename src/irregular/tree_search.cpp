@@ -29,6 +29,25 @@ using namespace packingsolver::irregular;
 namespace
 {
 
+/**
+ * Return false only if two boxes are far enough apart for the elements they
+ * contain to not intersect.
+ *
+ * 'shape::intersect' considers that two elements intersect if they are
+ * within its tolerance (1e-6) of each other; the margin is much larger, so
+ * that no intersection is missed.
+ */
+bool aabbs_may_intersect(
+        const AxisAlignedBoundingBox& aabb_1,
+        const AxisAlignedBoundingBox& aabb_2)
+{
+    const LengthDbl margin = 1e-4;
+    return aabb_1.x_max + margin >= aabb_2.x_min
+        && aabb_2.x_max + margin >= aabb_1.x_min
+        && aabb_1.y_max + margin >= aabb_2.y_min
+        && aabb_2.y_max + margin >= aabb_1.y_min;
+}
+
 Direction default_direction(
         const Instance& instance,
         BinTypeId bin_type_id)
@@ -67,13 +86,38 @@ Direction default_direction(
 
 }
 
+namespace
+{
+
+/**
+ * Return the simplified shapes of 'instance' for
+ * 'maximum_approximation_ratio': those of its cache if they have already
+ * been computed (see 'Instance::get_simplified_instance'), otherwise newly
+ * computed ones, which are not stored in the cache since the tree search
+ * uses many maximum approximation ratios.
+ */
+SimplifiedInstance compute_simplified_instance(
+        const Instance& instance,
+        double maximum_approximation_ratio)
+{
+    bool end = true;
+    const SimplifiedInstance* simplified_instance = instance.get_simplified_instance(
+            maximum_approximation_ratio,
+            end);
+    if (simplified_instance != nullptr)
+        return *simplified_instance;
+    return shape_simplification(instance, maximum_approximation_ratio);
+}
+
+}
+
 BranchingScheme::BranchingScheme(
         const Instance& instance,
         const Parameters& parameters):
     instance_(instance),
-    simplified_instance_(shape_simplification(
-            instance,
-            parameters.maximum_approximation_ratio)),
+    simplified_instance_(compute_simplified_instance(
+                instance,
+                parameters.maximum_approximation_ratio)),
     parameters_(parameters)
 {
     // Compute bin_type_ids_ and previous_bins_area_.
@@ -477,6 +521,17 @@ BranchingScheme::Node BranchingScheme::child_tmp(
     const Support& supporting_part = bb_bin_type.supporting_parts[insertion.supporting_part_pos];
     Shape supporting_shape = supporting_part.shape;
     supporting_shape.shift(insertion.supporting_part_x, insertion.supporting_part_y);
+    // Bounding boxes of the supporting shape and of its elements, to skip
+    // the intersection tests which can't succeed.
+    std::vector<AxisAlignedBoundingBox> supporting_shape_elements_aabbs;
+    supporting_shape_elements_aabbs.reserve(supporting_shape.elements.size());
+    AxisAlignedBoundingBox supporting_shape_aabb;
+    for (const ShapeElement& supporting_shape_element: supporting_shape.elements) {
+        supporting_shape_elements_aabbs.push_back(supporting_shape_element.min_max());
+        supporting_shape_aabb = merge(
+                supporting_shape_aabb,
+                supporting_shape_elements_aabbs.back());
+    }
 
     //std::cout << "shape_trapezoid " << shape_trapezoid << std::endl;
 
@@ -557,10 +612,26 @@ BranchingScheme::Node BranchingScheme::child_tmp(
                 element_3.start = {trapezoid.x_bottom_right(), trapezoid.y_bottom()};
                 element_3.end = {trapezoid.x_top_right(), trapezoid.y_top()};
 
+                // Bounding box of the three elements.
+                AxisAlignedBoundingBox trapezoid_aabb;
+                trapezoid_aabb.x_min = (std::min)(trapezoid.x_bottom_left(), trapezoid.x_top_left());
+                trapezoid_aabb.x_max = (std::max)(trapezoid.x_bottom_right(), trapezoid.x_top_right());
+                trapezoid_aabb.y_min = trapezoid.y_bottom();
+                trapezoid_aabb.y_max = trapezoid.y_top();
+
                 bool add_to_skyline = false;
+                bool may_intersect_supporting_shape = aabbs_may_intersect(
+                        supporting_shape_aabb,
+                        trapezoid_aabb);
                 for (ElementPos supporting_shape_element_pos = 0;
-                        supporting_shape_element_pos < supporting_shape.elements.size();
+                        may_intersect_supporting_shape
+                        && supporting_shape_element_pos < supporting_shape.elements.size();
                         ++supporting_shape_element_pos) {
+                    if (!aabbs_may_intersect(
+                                supporting_shape_elements_aabbs[supporting_shape_element_pos],
+                                trapezoid_aabb)) {
+                        continue;
+                    }
                     const ShapeElement& supporting_shape_element = supporting_shape.elements[supporting_shape_element_pos];
                     if (shape::intersect(supporting_shape_element, element_1)) {
                         //std::cout << "supporting_shape_element " << supporting_shape_element.to_string() << std::endl;
@@ -720,9 +791,7 @@ BranchingScheme::Node BranchingScheme::child_tmp(
     // Compute node.x_max and node.y_max.
     Point xy = convert_point_back({node.x, node.y}, node.last_bin_direction);
     xy = (1.0 / instance().parameters().scale_value) * xy;
-    AxisAlignedBoundingBox aabb = item_type.compute_min_max(
-            trapezoid_set.angle,
-            trapezoid_set.mirror);
+    const AxisAlignedBoundingBox& aabb = trapezoid_set.item_type_aabb_orig;
     if (insertion.new_bin_direction == Direction::Any) {  // Same bin
         node.x_min = std::min(parent.x_min, xy.x + aabb.x_min);
         node.x_max = std::max(parent.x_max, xy.x + aabb.x_max);
@@ -1217,6 +1286,18 @@ void BranchingScheme::insertion_trapezoid_set(
 
     if (slider.out_of_bounds(insertion))
         return;
+
+    // Check that the item can fit between the bottom and the top of the bin.
+    // While sliding, the y-coordinate of the trapezoid set remains in the
+    // range given by the bounding boxes of the supporting and supported parts.
+    LengthDbl y_lowest = supporting_part.aabb.y_min + supporting_part_y
+        - supported_part.aabb.y_max;
+    LengthDbl y_highest = supporting_part.aabb.y_max + supporting_part_y
+        - supported_part.aabb.y_min;
+    if (strictly_greater(y_lowest + trapezoid_set.y_max, bb_bin_type.y_max)
+            || strictly_lesser(y_highest + trapezoid_set.y_min, bb_bin_type.y_min)) {
+        return;
+    }
 
     // Move the item to the right of the left side of the bin.
     if (!slider.slide_right_of(
@@ -1931,7 +2012,9 @@ void tree_search_worker(
         queue_size = std::max(
                 queue_size + 1,
                 (NodeId)(queue_size * 1.5));
-        maximum_approximation_ratio *= parameters.maximum_approximation_ratio_factor;
+        maximum_approximation_ratio = (std::max)(
+                parameters.minimum_maximum_approximation_ratio,
+                maximum_approximation_ratio * parameters.maximum_approximation_ratio_factor);
     }
 }
 
@@ -1965,6 +2048,8 @@ const packingsolver::irregular::TreeSearchOutput packingsolver::irregular::tree_
                 = parameters.not_anytime_maximum_approximation_ratio;
             inner_parameters.maximum_approximation_ratio_factor
                 = parameters.maximum_approximation_ratio_factor;
+            inner_parameters.minimum_maximum_approximation_ratio
+                = parameters.minimum_maximum_approximation_ratio;
             return tree_search(sub_instance, inner_parameters).solution_pool;
         };
 

@@ -308,6 +308,8 @@ void bind_rectangleguillotine(nb::module_& m)
                 "- copies_min: minimum number of copies of the bin type.")
         .def("add_defect", &InstanceBuilder::add_defect,
                 nb::arg("bin_type_id"), nb::arg("x"), nb::arg("y"), nb::arg("w"), nb::arg("h"))
+        .def("crop_bin_type", &InstanceBuilder::crop_bin_type,
+                nb::arg("bin_type_id"), nb::arg("width"), nb::arg("height"))
         .def("add_bin_type_resource", &InstanceBuilder::add_bin_type_resource,
                 nb::arg("bin_type_id"), nb::arg("capacity"), nb::arg("penalize") = false, nb::arg("penalty") = 0.0)
         .def("add_resource_consumption", &InstanceBuilder::add_resource_consumption,
@@ -329,7 +331,8 @@ void bind_rectangleguillotine(nb::module_& m)
                     std::optional<ItemPos> copies_min)
                 {
                     ItemTypeId item_type_id = instance_builder.add_item_type(
-                            width, height, oriented, stack_id);
+                            width, height, oriented);
+                    instance_builder.set_item_type_stack_id(item_type_id, stack_id);
                     if (profit.has_value())
                         instance_builder.set_item_type_profit(item_type_id, *profit);
                     if (copies.has_value())
@@ -497,6 +500,8 @@ void bind_rectangleguillotine(nb::module_& m)
         .def_rw("many_item_type_copies_factor", &OptimizeParameters::many_item_type_copies_factor)
         .def_rw("sequential_value_correction_subproblem_tree_search_queue_size", &OptimizeParameters::sequential_value_correction_subproblem_tree_search_queue_size)
         .def_rw("sequential_value_correction_subproblem_tree_search_maximal_spaces_queue_size", &OptimizeParameters::sequential_value_correction_subproblem_tree_search_maximal_spaces_queue_size)
+        .def_rw("sequential_value_correction_restrict_bin_types", &OptimizeParameters::sequential_value_correction_restrict_bin_types)
+        .def_rw("sequential_value_correction_scarce_item_types_profit_factor_exponent", &OptimizeParameters::sequential_value_correction_scarce_item_types_profit_factor_exponent)
         .def_rw("column_generation_subproblem_tree_search_queue_size", &OptimizeParameters::column_generation_subproblem_tree_search_queue_size)
         .def_rw("column_generation_subproblem_tree_search_maximal_spaces_queue_size", &OptimizeParameters::column_generation_subproblem_tree_search_maximal_spaces_queue_size)
         .def_rw("not_anytime_tree_search_queue_size", &OptimizeParameters::not_anytime_tree_search_queue_size)

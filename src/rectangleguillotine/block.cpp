@@ -1,5 +1,7 @@
 #include "rectangleguillotine/block.hpp"
 
+#include "rectangleguillotine/instance_cache.hpp"
+
 #include "optimizationtools/utils/utils.hpp"
 
 #include <algorithm>
@@ -124,7 +126,8 @@ struct BlockFillRateLess {
 std::vector<Block> compute_blocks_for_bin(
         const Instance& instance,
         BinTypeId bin_type_id,
-        const BlockParameters& parameters)
+        const BlockParameters& parameters,
+        const bool* end)
 {
     const BinType& bin_type = instance.bin_type(bin_type_id);
     Length bin_w = bin_type.rect.w;
@@ -148,39 +151,11 @@ std::vector<Block> compute_blocks_for_bin(
     for (ItemTypeId item_type_id = 0;
             item_type_id < instance.number_of_item_types();
             ++item_type_id) {
-        const ItemType& item_type = instance.item_type(item_type_id);
-        if (item_type.copies < 1)
-            continue;
-        int number_of_rotations = item_type.oriented ? 1 : 2;
-        for (int rot_idx = 0; rot_idx < number_of_rotations; ++rot_idx) {
-            bool rotate = (rot_idx == 1);
-            Length bw = item_type.width(rotate);
-            Length bh = item_type.height(rotate);
-            ItemPos copies_max_x = (std::min)(
-                    item_type.copies,
-                    (ItemPos)((bin_w + cut_thickness) / (bw + cut_thickness)));
-            for (ItemPos cx = 1; cx <= copies_max_x; ++cx) {
-                ItemPos copies_max_y = (std::min)(
-                        item_type.copies / cx,
-                        (ItemPos)((bin_h + cut_thickness) / (bh + cut_thickness)));
-                for (ItemPos cy = 1; cy <= copies_max_y; ++cy) {
-                    Block block;
-                    block.is_simple = true;
-                    block.item_type_id = item_type_id;
-                    block.rotate = rotate;
-                    block.rect = {
-                        cx * bw + (cx - 1) * cut_thickness,
-                        cy * bh + (cy - 1) * cut_thickness};
-                    block.item_area = cx * cy * item_type.area();
-                    block.item_profit = (double)(cx * cy) * item_type.profit;
-                    block.item_copies = {{item_type_id, cx * cy}};
-                    block.number_of_items = cx * cy;
-                    BlockKey key = make_key(block);
-                    if (!seen.count(key)) {
-                        seen.insert(key);
-                        enqueue(std::move(block));
-                    }
-                }
+        for (Block& block: compute_simple_blocks(instance, bin_type_id, item_type_id)) {
+            BlockKey key = make_key(block);
+            if (!seen.count(key)) {
+                seen.insert(key);
+                enqueue(std::move(block));
             }
         }
     }
@@ -188,6 +163,8 @@ std::vector<Block> compute_blocks_for_bin(
     while (!blocks_to_process.empty()) {
         if (parameters.maximum_number_of_blocks != -1
                 && (ItemPos)returned_blocks.size() >= parameters.maximum_number_of_blocks)
+            break;
+        if (end != nullptr && *end)
             break;
 
         auto it = std::prev(blocks_to_process.end());
@@ -241,11 +218,15 @@ std::vector<Block> compute_blocks_for_bin(
                 key.item_copies = merge_item_copies(block.item_copies, existing_block.item_copies);
                 if (seen.count(key))
                     continue;
+                seen.insert(key);
                 combined.item_copies = key.item_copies;
+                combined.resource_consumption = compute_block_resource_consumption(
+                        instance, bin_type_id, combined.item_copies);
+                if (!block_resource_feasible(instance, bin_type_id, combined))
+                    continue;
                 combined.cut_is_vertical = (direction == 0);
                 combined.child_1_id = current_block_id;
                 combined.child_2_id = existing_idx;
-                seen.insert(key);
                 enqueue(std::move(combined));
             }
         }
@@ -267,15 +248,129 @@ std::ostream& packingsolver::rectangleguillotine::operator<<(
     return os;
 }
 
+std::vector<double> packingsolver::rectangleguillotine::compute_block_resource_consumption(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        const std::vector<std::pair<ItemTypeId, ItemPos>>& item_copies)
+{
+    const BinType& bin_type = instance.bin_type(bin_type_id);
+    std::vector<double> resource_consumption(bin_type.number_of_resources(), 0.0);
+    for (const std::pair<ItemTypeId, ItemPos>& item_copy: item_copies) {
+        const ItemType& item_type = instance.item_type(item_copy.first);
+        for (const ItemResourceConsumption& consumption: item_type.resources[bin_type_id]) {
+            const std::vector<double>& schedule = bin_type.resource(consumption.resource_id)
+                .item_consumptions[consumption.consumption_pos].second;
+            if (schedule.empty())
+                continue;
+            // A copy past the end of the schedule consumes its last entry.
+            ItemPos number_of_scheduled_copies = (std::min)(
+                    item_copy.second,
+                    (ItemPos)schedule.size());
+            for (ItemPos copy = 0; copy < number_of_scheduled_copies; ++copy)
+                resource_consumption[consumption.resource_id] += schedule[copy];
+            resource_consumption[consumption.resource_id]
+                += (item_copy.second - number_of_scheduled_copies) * schedule.back();
+        }
+    }
+    return resource_consumption;
+}
+
+bool packingsolver::rectangleguillotine::block_resource_feasible(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        const Block& block)
+{
+    const BinType& bin_type = instance.bin_type(bin_type_id);
+    for (ResourceId resource_id = 0;
+            resource_id < bin_type.number_of_resources();
+            ++resource_id) {
+        const Resource& resource = bin_type.resource(resource_id);
+        if (!resource.penalize
+                && block.resource_consumption[resource_id] > resource.capacity) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<Block> packingsolver::rectangleguillotine::compute_simple_blocks(
+        const Instance& instance,
+        BinTypeId bin_type_id,
+        ItemTypeId item_type_id)
+{
+    const BinType& bin_type = instance.bin_type(bin_type_id);
+    Length bin_w = bin_type.rect.w;
+    Length bin_h = bin_type.rect.h;
+    Length cut_thickness = instance.parameters().cut_thickness;
+    const ItemType& item_type = instance.item_type(item_type_id);
+
+    std::vector<Block> blocks;
+    if (item_type.copies < 1)
+        return blocks;
+    int number_of_rotations = item_type.oriented ? 1 : 2;
+    for (int rot_idx = 0; rot_idx < number_of_rotations; ++rot_idx) {
+        bool rotate = (rot_idx == 1);
+        Length bw = item_type.width(rotate);
+        Length bh = item_type.height(rotate);
+        ItemPos copies_max_x = (std::min)(
+                item_type.copies,
+                (ItemPos)((bin_w + cut_thickness) / (bw + cut_thickness)));
+        for (ItemPos cx = 1; cx <= copies_max_x; ++cx) {
+            ItemPos copies_max_y = (std::min)(
+                    item_type.copies / cx,
+                    (ItemPos)((bin_h + cut_thickness) / (bh + cut_thickness)));
+            for (ItemPos cy = 1; cy <= copies_max_y; ++cy) {
+                Block block;
+                block.is_simple = true;
+                block.item_type_id = item_type_id;
+                block.rotate = rotate;
+                block.rect = {
+                    cx * bw + (cx - 1) * cut_thickness,
+                    cy * bh + (cy - 1) * cut_thickness};
+                block.item_area = cx * cy * item_type.area();
+                block.item_profit = (double)(cx * cy) * item_type.profit;
+                block.item_copies = {{item_type_id, cx * cy}};
+                block.number_of_items = cx * cy;
+                block.resource_consumption = compute_block_resource_consumption(
+                        instance, bin_type_id, block.item_copies);
+                if (!block_resource_feasible(instance, bin_type_id, block))
+                    continue;
+                blocks.push_back(std::move(block));
+            }
+        }
+    }
+    return blocks;
+}
+
 std::vector<std::vector<Block>> packingsolver::rectangleguillotine::compute_blocks(
         const Instance& instance,
-        const BlockParameters& parameters)
+        const BlockParameters& parameters,
+        const bool* end)
 {
     std::vector<std::vector<Block>> result(instance.number_of_bin_types());
     for (BinTypeId bin_type_id = 0;
             bin_type_id < instance.number_of_bin_types();
             ++bin_type_id) {
-        result[bin_type_id] = compute_blocks_for_bin(instance, bin_type_id, parameters);
+        result[bin_type_id] = compute_blocks_for_bin(instance, bin_type_id, parameters, end);
     }
     return result;
+}
+
+const std::vector<std::vector<Block>>* Instance::get_blocks(
+        const bool& end) const
+{
+    if (blocks_cache_->computed.load(std::memory_order_acquire))
+        return &blocks_cache_->blocks;
+    if (end)
+        return nullptr;
+    // Only one thread computes the blocks; the other ones wait for it.
+    std::lock_guard<std::mutex> lock(blocks_cache_->mutex);
+    if (blocks_cache_->computed.load(std::memory_order_acquire))
+        return &blocks_cache_->blocks;
+    std::vector<std::vector<Block>> blocks = compute_blocks(*this, BlockParameters(), &end);
+    if (end)
+        return nullptr;
+    blocks_cache_->blocks = std::move(blocks);
+    blocks_cache_->computed.store(true, std::memory_order_release);
+    return &blocks_cache_->blocks;
 }

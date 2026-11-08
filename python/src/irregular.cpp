@@ -1,5 +1,6 @@
 #include "common.hpp"
 
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/tuple.h>
 #include <nanobind/stl/variant.h>
 
@@ -667,18 +668,25 @@ void bind_irregular(nb::module_& m)
         .def_rw("use_local_search_direct_trigonometry", &OptimizeParameters::use_local_search_direct_trigonometry)
         .def_rw("use_local_search_black_box_optimization", &OptimizeParameters::use_local_search_black_box_optimization)
         .def_rw("use_milp_raster", &OptimizeParameters::use_milp_raster)
+        .def_rw("use_tree_search_relative_positions", &OptimizeParameters::use_tree_search_relative_positions)
+        .def_rw("use_global_nonlinear_programming", &OptimizeParameters::use_global_nonlinear_programming)
+        .def_rw("use_benders_decomposition", &OptimizeParameters::use_benders_decomposition)
+        .def_rw("benders_decomposition_use_tree_search_relative_positions", &OptimizeParameters::benders_decomposition_use_tree_search_relative_positions)
         .def_rw("use_sequential_single_knapsack", &OptimizeParameters::use_sequential_single_knapsack)
         .def_rw("use_sequential_value_correction", &OptimizeParameters::use_sequential_value_correction)
         .def_rw("use_dichotomic_search", &OptimizeParameters::use_dichotomic_search)
         .def_rw("use_column_generation", &OptimizeParameters::use_column_generation)
         .def_rw("initial_maximum_approximation_ratio", &OptimizeParameters::initial_maximum_approximation_ratio)
         .def_rw("maximum_approximation_ratio_factor", &OptimizeParameters::maximum_approximation_ratio_factor)
+        .def_rw("minimum_maximum_approximation_ratio", &OptimizeParameters::minimum_maximum_approximation_ratio)
         .def_rw("many_items_in_bins_threshold", &OptimizeParameters::many_items_in_bins_threshold)
         .def_rw("many_item_type_copies_factor", &OptimizeParameters::many_item_type_copies_factor)
         .def_rw("periodic_packing_copies_threshold", &OptimizeParameters::periodic_packing_copies_threshold)
         .def_rw("periodic_packing_max_items_threshold", &OptimizeParameters::periodic_packing_max_items_threshold)
         .def_rw("tree_search_guides", &OptimizeParameters::tree_search_guides)
         .def_rw("sequential_value_correction_subproblem_tree_search_queue_size", &OptimizeParameters::sequential_value_correction_subproblem_tree_search_queue_size)
+        .def_rw("sequential_value_correction_restrict_bin_types", &OptimizeParameters::sequential_value_correction_restrict_bin_types)
+        .def_rw("sequential_value_correction_scarce_item_types_profit_factor_exponent", &OptimizeParameters::sequential_value_correction_scarce_item_types_profit_factor_exponent)
         .def_rw("column_generation_subproblem_tree_search_queue_size", &OptimizeParameters::column_generation_subproblem_tree_search_queue_size)
         .def_rw("not_anytime_maximum_approximation_ratio", &OptimizeParameters::not_anytime_maximum_approximation_ratio)
         .def_rw("not_anytime_tree_search_queue_size", &OptimizeParameters::not_anytime_tree_search_queue_size)
@@ -704,6 +712,7 @@ void bind_irregular(nb::module_& m)
     def_output_field(output, "open_dimension_x_bound", &irregular::Output::open_dimension_x_bound);
     def_output_field(output, "open_dimension_y_bound", &irregular::Output::open_dimension_y_bound);
     def_output_field(output, "is_proven_infeasible", &irregular::Output::is_proven_infeasible);
+    def_output_field(output, "infeasible_subset", &irregular::Output::infeasible_subset);
 
     m.def("optimize",
             [](std::shared_ptr<Instance> instance, const OptimizeParameters& parameters) {

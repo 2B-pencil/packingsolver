@@ -366,12 +366,13 @@ Instance Reduction::reduction_to_instance(
 {
     InstanceBuilder instance_builder;
     instance_builder.set_objective(original_instance_->objective());
+    instance_builder.set_knapsack_goal(original_instance_->knapsack_goal());
     instance_builder.set_parameters(original_instance_->parameters());
+    instance_builder.set_original_instance(*original_instance_);
     instance_builder.set_feasibility_callback(original_instance_->feasibility_callback());
 
     // Bin types are copied in order, without the dominated ones (see
-    // 'compute_dominated_bin_types'). 'add_item_type(original_instance,
-    // id)' below only copies the resource consumptions of the bin types
+    // 'compute_dominated_bin_types'). 'add_item_type_from_original_instance' below only copies the resource consumptions of the bin types
     // added here.
     reduced_to_original_bin_type_id_.clear();
     for (BinTypeId bin_type_id = 0;
@@ -381,7 +382,7 @@ Instance Reduction::reduction_to_instance(
                 && bin_type_removed[bin_type_id]) {
             continue;
         }
-        instance_builder.add_bin_type(*original_instance_, bin_type_id);
+        instance_builder.add_bin_type_from_original_instance(bin_type_id);
         reduced_to_original_bin_type_id_.push_back(bin_type_id);
     }
 
@@ -415,12 +416,12 @@ Instance Reduction::reduction_to_instance(
                 origin_runs.push_back({other_item_type_id, merged_copies});
         }
 
-        // 'add_item_type(original_instance, id)' already copies every
+        // 'add_item_type_from_original_instance' already copies every
         // field that never changes here (shapes, allowed rotations,
         // profit, resource consumption schedules, cached periodic
         // packings, ...) - only 'copies'/'copies_min' need overriding for
         // a merged survivor.
-        ItemTypeId new_item_type_id = instance_builder.add_item_type(*original_instance_, item_type_id);
+        ItemTypeId new_item_type_id = instance_builder.add_item_type_from_original_instance(item_type_id);
         instance_builder.set_item_type_copies(new_item_type_id, total_copies);
         instance_builder.set_item_type_copies_min(new_item_type_id, total_copies_min);
 
@@ -483,6 +484,25 @@ ItemTypeId Reduction::consume_one_origin(
     if (--runs.back().count == 0)
         runs.pop_back();
     return original_item_type_id;
+}
+
+std::vector<std::pair<ItemTypeId, ItemPos>> Reduction::unreduce_infeasible_subset(
+        const std::vector<std::pair<ItemTypeId, ItemPos>>& infeasible_subset) const
+{
+    std::vector<ItemPos> copies(original_instance_->number_of_item_types(), 0);
+    for (const std::pair<ItemTypeId, ItemPos>& p: infeasible_subset) {
+        std::vector<OriginRun> runs = reduced_item_origin_runs_[p.first];
+        for (ItemPos copy = 0; copy < p.second; ++copy)
+            copies[consume_one_origin(runs)]++;
+    }
+    std::vector<std::pair<ItemTypeId, ItemPos>> original_infeasible_subset;
+    for (ItemTypeId item_type_id = 0;
+            item_type_id < original_instance_->number_of_item_types();
+            ++item_type_id) {
+        if (copies[item_type_id] > 0)
+            original_infeasible_subset.push_back({item_type_id, copies[item_type_id]});
+    }
+    return original_infeasible_subset;
 }
 
 Solution Reduction::unreduce_solution(
