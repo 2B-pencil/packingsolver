@@ -41,7 +41,7 @@ struct TreeSearchHypergraphParameters: packingsolver::Parameters<Instance, Solut
 
     /** Linear programming solver. */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /**
      * Function returning the profit of the best solution known, for example

@@ -25,6 +25,7 @@
 
 using namespace packingsolver;
 using namespace packingsolver::rectangle;
+using packingsolver::rectangle::Output;
 using namespace packingsolver::rectangle::onedimentional_contiguity;
 
 namespace
@@ -1551,8 +1552,8 @@ BendersDecompositionContiguityOutput packingsolver::rectangle::benders_decomposi
         packingsolver::Parameters<Instance, Solution, Output> local_parameters;
         local_parameters.verbosity_level = 0;
         local_parameters.timer = parameters.timer;
-        Output local_output_x(instance);
-        Output local_output_y(instance);
+        packingsolver::rectangle::Output local_output_x(instance);
+        packingsolver::rectangle::Output local_output_y(instance);
         AlgorithmFormatter local_algorithm_formatter_x(
                 instance,
                 local_parameters,

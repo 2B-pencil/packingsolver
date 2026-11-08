@@ -34,7 +34,7 @@ struct TrivialBoundParameters: packingsolver::Parameters<Instance, Solution, Out
      * 'OptimizeParameters::linear_programming_solver_name').
      */
     columngenerationsolver::SolverName linear_programming_solver_name
-        = columngenerationsolver::SolverName::CLP;
+        = columngenerationsolver::SolverName::Highs;
 
     /**
      * Maximum size of the dynamic programming of a subset sum problem (see
