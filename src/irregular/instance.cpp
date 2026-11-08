@@ -1,6 +1,7 @@
 #include "packingsolver/irregular/instance.hpp"
 
 #include <sstream>
+#include <iomanip>
 
 using namespace packingsolver;
 using namespace packingsolver::irregular;

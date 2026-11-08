@@ -10,6 +10,7 @@
 #include "packingsolver/irregular/reduction.hpp"
 
 #include "columngenerationsolver/commons.hpp"
+#include <iomanip>
 
 namespace packingsolver
 {

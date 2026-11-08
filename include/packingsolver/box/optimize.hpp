@@ -10,6 +10,7 @@
 #include "packingsolver/box/reduction.hpp"
 
 #include "columngenerationsolver/commons.hpp"
+#include <iomanip>
 
 namespace packingsolver
 {

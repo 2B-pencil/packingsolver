@@ -3,6 +3,7 @@
 #include "packingsolver/rectangle/optimize.hpp"
 
 #include "mathoptsolverscmake/mathopt.hpp"
+#include <iomanip>
 
 namespace packingsolver
 {

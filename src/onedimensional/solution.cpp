@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
 
 using namespace packingsolver;
 using namespace packingsolver::onedimensional;

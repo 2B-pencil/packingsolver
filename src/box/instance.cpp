@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include <sstream>
+#include <iomanip>
 
 using namespace packingsolver;
 using namespace packingsolver::box;

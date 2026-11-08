@@ -17,6 +17,7 @@
 #include "algorithms/sequential_value_correction.hpp"
 #include "algorithms/column_generation.hpp"
 #include "algorithms/thread_pool.hpp"
+#include <numeric>
 
 
 

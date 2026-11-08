@@ -7,6 +7,7 @@
 #include "treesearchsolver/iterative_beam_search.hpp"
 
 #include <thread>
+#include <numeric>
 
 using namespace packingsolver;
 using namespace packingsolver::rectangleguillotine;

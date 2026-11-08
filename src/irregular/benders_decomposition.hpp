@@ -27,6 +27,7 @@
 #pragma once
 
 #include "packingsolver/irregular/optimize.hpp"
+#include <iomanip>
 
 namespace packingsolver
 {

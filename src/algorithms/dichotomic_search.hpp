@@ -19,6 +19,7 @@
 
 #include "knapsacksolver/instance_builder.hpp"
 #include "knapsacksolver/algorithms/dynamic_programming_primal_dual.hpp"
+#include <numeric>
 
 namespace packingsolver
 {

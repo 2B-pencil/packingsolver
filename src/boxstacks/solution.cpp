@@ -5,6 +5,7 @@
 #include "algorithms/staircase.hpp"
 
 #include "optimizationtools/utils/utils.hpp"
+#include <iomanip>
 
 using namespace packingsolver;
 using namespace packingsolver::boxstacks;
